@@ -1,0 +1,113 @@
+name: Scala CI
+
+# Reusable CI for Soundness-ecosystem applications: sync the pinned Soundness release from
+# GitHub Releases into ~/.ivy2/local, compile, publish any locally-resolved module, assemble,
+# and run the test suite. Callers name their Mill targets; everything version-shaped is read
+# from the CALLER's build.mill, so a Soundness or toolchain bump re-keys the caches and
+# re-syncs the release with no workflow change.
+#
+# Contract with the caller: a checked-in `./mill` bootstrap wrapper, and the
+# `soundnessVersion`/`SOUNDNESS_SCALA_RELEASE` pins in build.mill.
+
+on:
+  workflow_call:
+    inputs:
+      compile:
+        description: Space-separated Mill compile targets, built in order
+        type: string
+        default: ""
+      publish_local:
+        description: A module to publishLocal before assembling (for launcher-style modules
+          that resolve a sibling as a published coordinate)
+        type: string
+        default: ""
+      assembly:
+        description: Space-separated Mill assembly targets, built in order
+        type: string
+        default: ""
+      test_assembly:
+        description: The Mill assembly target holding the test suite
+        type: string
+        required: true
+      test_main:
+        description: The test suite's main class
+        type: string
+        required: true
+      timeout:
+        description: Job timeout in minutes
+        type: number
+        default: 60
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # The version pins live in the caller's build.mill; read them once so caches and the
+      # release sync follow a bump automatically.
+      - name: Read version pins
+        id: pins
+        run: |
+          echo "soundness=$(sed -n 's/.*val soundnessVersion = "\(.*\)".*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
+          echo "scala=$(sed -n 's/.*SOUNDNESS_SCALA_RELEASE", "\(.*\)").*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
+
+      # Mill's bootstrap needs a JVM to start from; the build provisions its own toolchain
+      # JVM, but the test suite runs with plain `java`, so this must be at least the bytecode
+      # level the build targets.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Cache Soundness release
+        uses: actions/cache@v5
+        with:
+          path: ~/.ivy2/local/dev.propensive
+          key: soundness-${{ steps.pins.outputs.soundness }}
+      - name: Cache proscala toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/soundness/proscala
+          key: proscala-${{ steps.pins.outputs.scala }}
+      - name: Cache coursier
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/coursier
+          key: coursier-${{ hashFiles('build.mill') }}
+          restore-keys: coursier-
+
+      # Soundness releases are per-component jars, each embedding its own POM and ivy.xml;
+      # the sync script — fetched from the same Soundness tag, so script and release layout
+      # cannot drift apart — reconstructs the ivy2 layout coursier resolves from. The token
+      # only lifts the API rate limit. Idempotent: digest-matched jars are left alone.
+      - name: Sync the Soundness release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pins.outputs.soundness }}
+        run: |
+          curl -fsSL -o /tmp/sync_releases.py \
+            "https://raw.githubusercontent.com/propensive/soundness/$VERSION/etc/ci/sync_releases.py"
+          python3 /tmp/sync_releases.py "$VERSION"
+
+      - name: Compile
+        if: inputs.compile != ''
+        run: |
+          for target in ${{ inputs.compile }}; do ./mill "$target"; done
+
+      - name: Publish locally
+        if: inputs.publish_local != ''
+        run: ./mill ${{ inputs.publish_local }}.publishLocal
+
+      - name: Assemble
+        if: inputs.assembly != ''
+        run: |
+          for target in ${{ inputs.assembly }}; do ./mill "$target"; done
+
+      # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar.
+      - name: Run the tests
+        run: |
+          ./mill ${{ inputs.test_assembly }}
+          jar="out/$(echo "${{ inputs.test_assembly }}" | tr '.' '/').dest/out.jar"
+          java -cp "$jar" ${{ inputs.test_main }}
