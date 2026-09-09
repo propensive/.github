@@ -33,6 +33,12 @@ on:
         description: The test suite's main class
         type: string
         required: true
+      extra_releases:
+        description: Further GitHub-Releases libraries to sync before building, as
+          space-separated `owner/repo=X.Y.Z` pairs (`propensive/pyrocosm=0.1.0`); each is
+          synced with the Soundness sync script pointed at that repository
+        type: string
+        default: ''
       timeout:
         description: Job timeout in minutes
         type: number
@@ -65,7 +71,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.ivy2/local/dev.propensive
-          key: soundness-${{ steps.pins.outputs.soundness }}
+          key: soundness-${{ steps.pins.outputs.soundness }}-${{ inputs.extra_releases }}
       - name: Cache proscala toolchain
         uses: actions/cache@v5
         with:
@@ -90,6 +96,17 @@ jobs:
           curl -fsSL -o /tmp/sync_releases.py \
             "https://raw.githubusercontent.com/propensive/soundness/$VERSION/etc/ci/sync_releases.py"
           python3 /tmp/sync_releases.py "$VERSION"
+
+      # Libraries released the same way from other repositories (Pyrocosm, say): the same
+      # script, pointed at each repository in turn.
+      - name: Sync further releases
+        if: inputs.extra_releases != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for pair in ${{ inputs.extra_releases }}; do
+            SOUNDNESS_RELEASE_REPO="${pair%%=*}" python3 /tmp/sync_releases.py "${pair##*=}"
+          done
 
       - name: Compile
         if: inputs.compile != ''
