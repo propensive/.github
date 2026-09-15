@@ -29,6 +29,29 @@ settings, and `bin/settings apply` makes it match. The settings are:
 the ruleset into each repository. Add a repository by adding a line to `repos.tsv`, making
 sure its checks already run on pull requests, and running `bin/settings apply <repo>`.
 
+## Shared scripts
+
+`scripts/` holds the release and setup scripts that used to be copied between repositories.
+A repository runs them through `etc/shared`, a copy of `scripts/shared`, which fetches a
+script from this repository at the commit pinned in the repository's `etc/github-ref`, caches
+it under `~/.cache/propensive/github/<sha>/`, and runs it in the calling repository:
+
+ -  `etc/shared xeq-fetch.sh` fetches the `xeq` builder pinned in `etc/xeq.tsv` into `dist/xeq`;
+ -  `etc/shared sync-releases.sh <owner/repo> <pin> [X.Y.Z | --staged]` installs a
+    GitHub-Releases library into `~/.ivy2/local`, at the version of `val <pin>` in `build.mill`
+    by default (for example `propensive/pyrocosm pyrocosmVersion`);
+ -  `etc/shared release-launcher.sh <name> "<library> …" X.Y.Z` publishes an application's
+    libraries and then its executables, installer and bootstrap to GitHub Releases;
+ -  `etc/shared generate-install.sh <name> X.Y.Z` writes the `curl … | sh` installer for a
+    release (run by `release-launcher.sh`).
+
+Pinning a full SHA means a change here reaches a repository only when that repository bumps
+its pin, in a reviewed commit. To try a change to a script before it is merged, set
+`PROPENSIVE_GITHUB` to a checkout of this repository.
+
+Soundness keeps its own `etc/ci` scripts: its release and `xeq-fetch.sh` are part of the input
+set its CI attestation signs, so they stay in that repository.
+
 ## `scala-ci.yml`
 
 Builds a Mill-based Soundness application and runs its test suite. A consumer's workflow
