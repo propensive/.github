@@ -1,0 +1,47 @@
+name: Rust CI
+
+# Reusable CI for the Rust side of Propensive's repositories (tel's reference implementation,
+# xeq's runner stubs): build and test a Cargo workspace on the stable toolchain, with the
+# registry and target directory cached against the lockfile.
+#
+# Contract with the caller: a `Cargo.toml` (and, for reproducible caching, a checked-in
+# `Cargo.lock`) at the repository root, or in `working_directory`.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: The directory holding the workspace's Cargo.toml
+        type: string
+        default: "."
+      test_args:
+        description: Arguments to `cargo test`
+        type: string
+        default: "--workspace --locked"
+      timeout:
+        description: Job timeout in minutes
+        type: number
+        default: 30
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ inputs.working_directory }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles(format('{0}/**/Cargo.lock', inputs.working_directory)) }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Run the tests
+        run: cargo test ${{ inputs.test_args }}

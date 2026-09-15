@@ -26,13 +26,14 @@ on:
         type: string
         default: ""
       test_assembly:
-        description: The Mill assembly target holding the test suite
+        description: The Mill assembly target holding the test suite; no tests are run if empty
+          (for a repository whose suites need a host runner, such as xeq's)
         type: string
-        required: true
+        default: ""
       test_main:
         description: The test suite's main class
         type: string
-        required: true
+        default: ""
       extra_releases:
         description: Further GitHub-Releases libraries to sync before building, as
           space-separated `owner/repo=X.Y.Z` pairs (`propensive/pyrocosm=0.1.0`); each is
@@ -124,6 +125,7 @@ jobs:
 
       # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar.
       - name: Run the tests
+        if: inputs.test_assembly != ''
         run: |
           ./mill ${{ inputs.test_assembly }}
           jar="out/$(echo "${{ inputs.test_assembly }}" | tr '.' '/').dest/out.jar"
