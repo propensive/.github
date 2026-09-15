@@ -1,0 +1,8 @@
+# repository	required status checks, comma-separated
+soundness	build
+lira	build
+tel	build / build
+xeq	build / build,rust / build
+pyrocosm	build / build
+flame	build / build
+fume	build / build

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+#
+# Keep the GitHub configuration of the repositories in settings/repos.tsv identical.
+#
+#   bin/settings check [repo…]    report every difference from the settings; exit 1 if any
+#   bin/settings apply [repo…]    make the repositories match the settings
+#
+# The settings are data in settings/: `repository.json` (repository flags, secret scanning, the
+# Actions token's default permissions, and the community files a repository should inherit from
+# this one rather than carry itself), `ruleset.json` (the `rules` ruleset protecting `main`, as
+# Soundness first defined it) and `repos.tsv` (which repositories, and the status checks each
+# one's ruleset requires, since the check names depend on how each repository runs its CI).
+#
+# `propensive` is a personal account, so there are no account-level rulesets to inherit: the
+# ruleset is copied into each repository. Requires `gh`, authenticated as a repository admin.
+
+import json, subprocess, sys
+from pathlib import Path
+
+OWNER = "propensive"
+ACTIONS_APP = 15368                   # GitHub Actions, the app every required check comes from
+ROOT = Path(__file__).resolve().parent.parent / "settings"
+
+def gh(*args, body=None, allow_missing=False):
+  command = ["gh", "api", *args]
+  if body is not None: command += ["--input", "-"]
+  result = subprocess.run(command, input=None if body is None else json.dumps(body),
+                          capture_output=True, text=True)
+  if result.returncode != 0:
+    if allow_missing and "404" in result.stdout + result.stderr: return None
+    sys.exit(f"gh api {' '.join(args)} failed:\n{result.stdout}{result.stderr}")
+  return json.loads(result.stdout) if result.stdout.strip() else None
+
+def repositories(selected):
+  table = {}
+  for line in (ROOT / "repos.tsv").read_text().splitlines():
+    if line.strip() and not line.startswith("#"):
+      name, checks = line.split("\t")
+      table[name] = [check.strip() for check in checks.split(",")]
+  unknown = [name for name in selected if name not in table]
+  if unknown: sys.exit(f"not in settings/repos.tsv: {', '.join(unknown)}")
+  return {name: table[name] for name in (selected or table)}
+
+def ruleset(checks):
+  rules = json.loads((ROOT / "ruleset.json").read_text())
+  for rule in rules["rules"]:
+    if rule["type"] == "required_status_checks":
+      rule["parameters"]["required_status_checks"] = \
+        [{"context": check, "integration_id": ACTIONS_APP} for check in checks]
+  return rules
+
+# Is everything in `wanted` also in `actual`? GitHub adds defaults to what it returns, so only the
+# keys the settings name are compared; rules are matched by type, since their order is not ours.
+def differences(wanted, actual, path=""):
+  if isinstance(wanted, dict):
+    if not isinstance(actual, dict): return [f"{path}: expected an object, found {actual!r}"]
+    return [d for key, value in wanted.items()
+              for d in differences(value, actual.get(key), f"{path}.{key}")]
+  if isinstance(wanted, list) and wanted and isinstance(wanted[0], dict) and "type" in wanted[0]:
+    found = {rule.get("type"): rule for rule in actual or []}
+    extra = [f"{path}: unexpected rule {kind}" for kind in found
+             if kind not in {rule["type"] for rule in wanted}]
+    return extra + [d for rule in wanted
+                      for d in (differences(rule, found[rule["type"]], f"{path}[{rule['type']}]")
+                                if rule["type"] in found else [f"{path}: missing rule {rule['type']}"])]
+  if isinstance(wanted, list):
+    key = lambda item: json.dumps(item, sort_keys=True)
+    if sorted(map(key, wanted)) != sorted(map(key, actual or [])):
+      return [f"{path}: expected {wanted}, found {actual}"]
+    return []
+  return [] if wanted == actual else [f"{path}: expected {wanted!r}, found {actual!r}"]
+
+def rules_of(repo):
+  summaries = gh(f"repos/{OWNER}/{repo}/rulesets") or []
+  named = [ruleset for ruleset in summaries if ruleset["name"] == "rules"]
+  others = [ruleset["name"] for ruleset in summaries if ruleset["name"] != "rules"]
+  current = gh(f"repos/{OWNER}/{repo}/rulesets/{named[0]['id']}") if named else None
+  return current, others
+
+def check(repo, checks, settings):
+  problems = []
+  details = gh(f"repos/{OWNER}/{repo}")
+  problems += differences(settings["repository"], details, "repository")
+  security = {key: {"status": value} for key, value in settings["security_and_analysis"].items()}
+  problems += differences(security, details.get("security_and_analysis"), "security")
+  permissions = gh(f"repos/{OWNER}/{repo}/actions/permissions/workflow")
+  problems += differences(settings["workflow_permissions"], permissions, "workflow_permissions")
+  current, others = rules_of(repo)
+  if current is None: problems.append("ruleset: no `rules` ruleset")
+  else: problems += differences(ruleset(checks), current, "ruleset")
+  problems += [f"ruleset: unexpected ruleset `{name}`" for name in others]
+  for path in settings["shared_files"]:
+    if gh(f"repos/{OWNER}/{repo}/contents/{path}", allow_missing=True) is not None:
+      problems.append(f"files: {path} overrides the shared copy in {OWNER}/.github")
+  return problems
+
+def apply(repo, checks, settings):
+  security = {key: {"status": value} for key, value in settings["security_and_analysis"].items()}
+  gh("-X", "PATCH", f"repos/{OWNER}/{repo}",
+     body={**settings["repository"], "security_and_analysis": security})
+  gh("-X", "PUT", f"repos/{OWNER}/{repo}/actions/permissions/workflow",
+     body=settings["workflow_permissions"])
+  current, _ = rules_of(repo)
+  if current is None: gh("-X", "POST", f"repos/{OWNER}/{repo}/rulesets", body=ruleset(checks))
+  else: gh("-X", "PUT", f"repos/{OWNER}/{repo}/rulesets/{current['id']}", body=ruleset(checks))
+
+def main():
+  if len(sys.argv) < 2 or sys.argv[1] not in ("check", "apply"):
+    sys.exit("usage: bin/settings check|apply [repo…]")
+  settings = json.loads((ROOT / "repository.json").read_text())
+  failed = False
+  for repo, checks in repositories(sys.argv[2:]).items():
+    if sys.argv[1] == "apply":
+      apply(repo, checks, settings)
+      print(f"{repo}: applied")
+    problems = check(repo, checks, settings)
+    failed = failed or bool(problems)
+    print(f"{repo}: {len(problems) or 'no'} difference{'' if len(problems) == 1 else 's'}")
+    for problem in problems: print(f"  {problem}")
+  sys.exit(1 if failed else 0)
+
+main()

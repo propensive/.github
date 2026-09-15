@@ -1,0 +1,28 @@
+{
+  "repository": {
+    "allow_squash_merge": true,
+    "allow_rebase_merge": true,
+    "allow_merge_commit": true,
+    "allow_auto_merge": true,
+    "allow_update_branch": false,
+    "delete_branch_on_merge": true,
+    "has_issues": true,
+    "has_projects": true,
+    "has_wiki": false,
+    "has_discussions": true
+  },
+  "security_and_analysis": {
+    "secret_scanning": "enabled",
+    "secret_scanning_push_protection": "enabled"
+  },
+  "workflow_permissions": {
+    "default_workflow_permissions": "read",
+    "can_approve_pull_request_reviews": false
+  },
+  "shared_files": [
+    ".github/pull_request_template.md",
+    ".github/contributing.md",
+    ".github/code_of_conduct.md",
+    ".github/security.md"
+  ]
+}
