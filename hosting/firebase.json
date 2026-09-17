@@ -1,0 +1,74 @@
+{
+  "hosting": [
+    {
+      "target": "flame",
+      "public": "empty",
+      "ignore": [
+        "**/.*"
+      ],
+      "redirects": [
+        {
+          "source": "**",
+          "destination": "https://github.com/propensive/flame/releases/latest/download/install.sh",
+          "type": 302
+        }
+      ]
+    },
+    {
+      "target": "fume",
+      "public": "empty",
+      "ignore": [
+        "**/.*"
+      ],
+      "redirects": [
+        {
+          "source": "**",
+          "destination": "https://github.com/propensive/fume/releases/latest/download/install.sh",
+          "type": 302
+        }
+      ]
+    },
+    {
+      "target": "flair",
+      "public": "empty",
+      "ignore": [
+        "**/.*"
+      ],
+      "redirects": [
+        {
+          "source": "**",
+          "destination": "https://github.com/propensive/flair/releases/latest/download/install.sh",
+          "type": 302
+        }
+      ]
+    },
+    {
+      "target": "tel",
+      "public": "empty",
+      "ignore": [
+        "**/.*"
+      ],
+      "redirects": [
+        {
+          "source": "**",
+          "destination": "https://github.com/propensive/tel/releases/latest/download/install.sh",
+          "type": 302
+        }
+      ]
+    },
+    {
+      "target": "lira",
+      "public": "empty",
+      "ignore": [
+        "**/.*"
+      ],
+      "redirects": [
+        {
+          "source": "**",
+          "destination": "https://github.com/propensive/lira/releases/latest/download/install.sh",
+          "type": 302
+        }
+      ]
+    }
+  ]
+}
