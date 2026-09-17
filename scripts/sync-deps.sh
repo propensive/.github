@@ -17,7 +17,7 @@
 # Both paths install the same bytes a consumer's CI resolves; both overwrite what a
 # `publishLocal` left under the same version.
 #
-# Usage: etc/shared sync-deps.sh [file]      (default etc/refs)
+# Usage: etc/shared sync-deps.sh [file]      (default etc/refs; etc/tools beside it)
 #
 # Environment: GITHUB_TOKEN lifts the API rate limit; IVY_LOCAL overrides the destination;
 # PROPENSIVE_WORK is the directory holding sibling checkouts.
@@ -87,4 +87,15 @@ while IFS=$'\t' read -r repo version tag kind commit; do
   fi
 done < <("$PROPENSIVE_SHARED" deps.py walk "$FILE")
 
-echo "sync-deps: $count pins installed, transitively, from $FILE"
+# A tool (etc/tools; see deps.py) is a release by rule, and its jars are installed without
+# walking anything: what a plugin needs at run time its own POM names, and coursier follows
+# that. A tool's command is installed by tools.sh, not here.
+TOOLS="$(dirname "$FILE")/tools"
+tools=0
+while IFS=$'\t' read -r repo version; do
+  [[ -z "$repo" ]] && continue
+  tools=$((tools + 1))
+  "$PROPENSIVE_SHARED" sync_releases.py --repo "$repo" "$version"
+done < <("$PROPENSIVE_SHARED" deps.py tools "$TOOLS")
+
+echo "sync-deps: $count pins installed, transitively, from $FILE; $tools tools from $TOOLS"

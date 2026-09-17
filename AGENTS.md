@@ -1,8 +1,10 @@
 # Agent instructions for propensive/.github
 
 This repository holds the scripts and the reusable CI workflow that every Soundness-ecosystem
-repository runs; `README.md` documents them and the dependency-pin scheme (`etc/refs`,
-snapshots) they implement. Rules for changing them:
+repository runs; `README.md` documents them and the pin scheme they implement: dependencies in
+`etc/refs` (releases or snapshots, walked transitively, gated at release) and tools in
+`etc/tools` (releases only, never walked, never gating — which is what keeps the release graph
+free of cycles). Rules for changing them:
 
 1. Consumers run the scripts at the commit pinned in their `etc/github-ref`, through their
    `etc/shared`. A merged change here reaches nobody until each repository bumps that pin, so

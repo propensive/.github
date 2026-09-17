@@ -16,7 +16,18 @@ declared at the time. The commit is a breadcrumb for humans and for sync-deps.sh
 the snapshot from a sibling checkout when it is not on GitHub.
 
 The build reads the file (a `deps` object in build.mill), so this is the single place a pin
-lives; CI keys its cache on the file's hash.
+lives; CI keys its cache on the files' hashes.
+
+A TOOL is different from a dependency. A dependency is what a repository's jars are compiled
+against, and what their POMs will name: Soundness for Pyrocosm, Pyrocosm for fume. A tool is
+what a repository RUNS — fume to run its tests, flair to check its sources, the flair compiler
+plugin Soundness loads with `-Xplugin` — and never appears in a POM. Tools are pinned in
+`etc/tools`, in the same shape, with two differences: a tool is always a RELEASE (a snapshot
+there is rejected), and a tool is not part of the closure `walk` computes or `check` gates,
+since a release of it exists by definition. That is what keeps the release graph acyclic:
+Soundness runs flair, flair depends on Pyrocosm, Pyrocosm depends on Soundness, and none of
+those releases waits on the others. `sync-deps.sh` installs a tool's jars (a plugin is a jar);
+`tools.sh` installs a tool's command.
 
 Pins are TRANSITIVE: a snapshot of Pyrocosm was built against some exact Soundness, named in
 Pyrocosm's own etc/refs at that commit, and its POMs refer to that version, so a consumer
@@ -29,7 +40,9 @@ and merely two releases otherwise, which coursier evicts as usual.
 Usage: deps.py walk [file]     the closure, as `repo TAB version TAB tag TAB kind [TAB commit]`
                                lines, dependencies before dependents
        deps.py check [file]    exit 1 unless every pin in the closure is a release that exists
-                               on GitHub (the gate every release script runs first)
+                               on GitHub (the gate every release script runs first); also
+                               validates etc/tools next to the file
+       deps.py tools [file]    the tools, as `repo TAB version` lines (etc/tools by default)
        deps.py kind <version>  prints `release` or `snapshot`, exit 1 for neither
 
 Environment: GITHUB_TOKEN lifts the API rate limit for `check`.
@@ -49,6 +62,7 @@ from pathlib import Path
 RELEASE = re.compile(r"^\d+\.\d+\.\d+$")
 SNAPSHOT = re.compile(r"^\d+\.\d+\.\d+-([0-9a-f]{12})$")
 DEFAULT_FILE = Path("etc/refs")
+TOOLS_FILE = Path("etc/tools")
 
 
 @dataclass(frozen=True)
@@ -81,7 +95,7 @@ def kind_of(version: str) -> str:
     return ""  # unreachable
 
 
-def parse(text: str, origin: str) -> list[Pin]:
+def parse(text: str, origin: str, releases_only: bool = False) -> list[Pin]:
     pins: list[Pin] = []
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -94,7 +108,8 @@ def parse(text: str, origin: str) -> list[Pin]:
         commit = columns[2] if len(columns) > 2 else ""
         if "/" not in repo:
             repo = f"propensive/{repo}"
-        kind_of(version)
+        if releases_only and kind_of(version) != "release":
+            fail(f"{origin}:{number}: a tool is always a release; '{version}' is not X.Y.Z")
         if kind_of(version) == "snapshot" and commit and not re.match(r"^[0-9a-f]{40}$", commit):
             fail(f"{origin}:{number}: the commit must be a full 40-hex SHA")
         pins.append(Pin(repo, version, commit))
@@ -169,10 +184,20 @@ def main(arguments: list[str]) -> int:
         print(kind_of(arguments[1]))
         return 0
 
+    if command == "tools":
+        file = Path(arguments[1]) if len(arguments) > 1 else TOOLS_FILE
+        if file.exists():
+            for pin in parse(file.read_text(encoding="utf-8"), str(file), releases_only=True):
+                print(f"{pin.repo}\t{pin.version}")
+        return 0
+
     file = Path(arguments[1]) if len(arguments) > 1 else DEFAULT_FILE
     if not file.exists():
         fail(f"{file} does not exist")
     closure = walk(parse(file.read_text(encoding="utf-8"), str(file)))
+    tools_file = file.parent / "tools"
+    tools = (parse(tools_file.read_text(encoding="utf-8"), str(tools_file), releases_only=True)
+             if tools_file.exists() else [])
 
     if command == "walk":
         for pin in closure:
@@ -184,11 +209,14 @@ def main(arguments: list[str]) -> int:
                     for pin in closure if pin.kind == "snapshot"]
         problems += [f"{pin.repo} has no published release {pin.version}"
                      for pin in closure if pin.kind == "release" and not release_exists(pin)]
+        problems += [f"tool {pin.repo} has no published release {pin.version}"
+                     for pin in tools if not release_exists(pin)]
         for problem in problems:
             print(f"deps: {problem}", file=sys.stderr)
         if problems:
             return 1
-        print(f"deps: every pin is a published release ({len(closure)} in the closure)")
+        print(f"deps: every pin is a published release ({len(closure)} in the closure, "
+              f"{len(tools)} tools)")
         return 0
 
     fail(f"unknown command {command}")
