@@ -43,3 +43,35 @@ The redirect target itself never changes, so a deploy is needed only when a tool
 
 The repository must publish `install.sh` with each release, which `release-launcher.sh` does
 for any repository using it.
+
+## Without the Firebase CLI
+
+Everything above can also be done with `gcloud`'s credentials and the Hosting REST API, which
+is how the sites were first made consistent (the CLI needs its own login; gcloud's suffices for
+the API, with the project named as the quota project):
+
+```sh
+T=$(gcloud auth print-access-token)
+API=https://firebasehosting.googleapis.com/v1beta1
+P=propensive-infrastructure
+auth=(-H "Authorization: Bearer $T" -H "x-goog-user-project: $P" -H "Content-Type: application/json")
+
+# a site
+curl -sS -X POST "${auth[@]}" -d '{}' "$API/projects/$P/sites?siteId=<tool>-propensive"
+# its redirect, as a finalized, released version
+V=$(curl -sS -X POST "${auth[@]}" -d '{"config":{"redirects":[{"glob":"**","statusCode":302,
+  "location":"https://github.com/propensive/<tool>/releases/latest/download/install.sh"}]}}' \
+  "$API/sites/<tool>-propensive/versions" | jq -r .name)
+curl -sS -X PATCH "${auth[@]}" -d '{"status":"FINALIZED"}' "$API/$V?updateMask=status"
+curl -sS -X POST "${auth[@]}" -d '{}' "$API/sites/<tool>-propensive/releases?versionName=$V"
+# the custom domain, whose `requiredDnsUpdates` say what to put in Cloud DNS
+curl -sS -X POST "${auth[@]}" -d '{}' \
+  "$API/projects/$P/sites/<tool>-propensive/customDomains?customDomainId=<tool>.propensive.dev"
+curl -sS "${auth[@]}" "$API/projects/$P/sites/<tool>-propensive/customDomains/<tool>.propensive.dev"
+# the DNS record it asks for
+gcloud dns record-sets create <tool>.propensive.dev. --zone propensive-dev --project $P \
+  --type CNAME --ttl 300 --rrdatas <tool>-propensive.web.app.
+```
+
+Ownership and the certificate follow within minutes of the CNAME resolving; the domain's
+`hostState`, `ownershipState` and `certState` all read `*_ACTIVE` once it is serving.
