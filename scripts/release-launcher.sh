@@ -7,9 +7,10 @@
 # Usage: etc/shared release-launcher.sh <name> "<library> …" X.Y.Z
 #
 # for example `etc/shared release-launcher.sh flame "flame-core flame-web flame-client" 0.2.0`. The
-# calling repository is expected to have a `<name>.launcher` assembly, a module per library
-# (`flame-core` is `flame.core`), a `val <name>Version = "X.Y.Z"` pin in build.mill, an
-# etc/refs naming only released dependencies, and an etc/xeq.tsv pin for the `xeq` builder.
+# calling repository is expected to have a `<name>.launcher` assembly, a `release.stage` task
+# staging the library modules' jars with their descriptors embedded, a `val <name>Version =
+# "X.Y.Z"` pin in build.mill, an etc/refs naming only released dependencies, and an etc/xeq.tsv
+# pin for the `xeq` builder.
 #
 # The assets have a strict order between them — the launcher's repackaged form externalizes each
 # library by matching its SHA-256 digest against the release's PUBLISHED assets — so the release
@@ -68,22 +69,23 @@ fi
 # before anything is published, so a failed download cannot leave a half-made release behind.
 "$PROPENSIVE_SHARED" xeq-fetch.sh
 
-# Build the libraries from scratch and publish them locally: the launcher's compile classpath
-# will hold exactly these bytes, so these are the bytes that must be released.
+# Build the libraries from scratch and stage them as release assets: `release.stage` embeds
+# each jar's POM and ivy.xml under META-INF/maven/, so the jar alone lets a consumer's
+# `sync-deps.sh` (or the flair plugin's `-Xplugin:` resolution in Soundness) install it. The
+# staged jars are then installed into ~/.ivy2/local — over whatever `publishLocal` left — so the
+# launcher's compile classpath holds exactly the bytes being released, which is what Burdock
+# hashes at compile time and matches against the release's assets.
 ./mill clean $NAME >/dev/null
-PUBLISH=()
-for lib in $LIBRARIES; do
-  [[ ${#PUBLISH[@]} -gt 0 ]] && PUBLISH+=(+)
-  PUBLISH+=("${lib//-/.}.publishLocal")
-done
-./mill "${PUBLISH[@]}"
+./mill release.stage
+STAGE_DIR="out/release/stage.dest"
+"$PROPENSIVE_SHARED" sync_releases.py --staged "$STAGE_DIR"
 
 STAGING=$(mktemp -d)
 declare -A LOCAL_DIGEST
 for lib in $LIBRARIES; do
-  jar="$HOME/.ivy2/local/dev.propensive/$lib/$VERSION/jars/$lib.jar"
+  jar="$STAGE_DIR/$lib-$VERSION.jar"
   if [[ ! -f "$jar" ]]; then
-    echo "fatal: $jar was not produced" >&2; exit 1
+    echo "fatal: $jar was not staged; is $lib in release.modules?" >&2; exit 1
   fi
   cp "$jar" "$STAGING/$lib-$VERSION.jar"
   LOCAL_DIGEST[$lib]=$(shasum -a 256 "$jar" | cut -d' ' -f1)
