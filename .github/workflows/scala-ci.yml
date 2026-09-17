@@ -1,13 +1,15 @@
 name: Scala CI
 
-# Reusable CI for Soundness-ecosystem applications: sync the pinned Soundness release from
+# Reusable CI for Soundness-ecosystem applications: install every library pinned in the
+# caller's etc/refs (releases and snapshots alike, transitively — see scripts/deps.py) from
 # GitHub Releases into ~/.ivy2/local, compile, publish any locally-resolved module, assemble,
-# and run the test suite. Callers name their Mill targets; everything version-shaped is read
-# from the CALLER's build.mill, so a Soundness or toolchain bump re-keys the caches and
-# re-syncs the release with no workflow change.
+# and run the test suite. Callers name their Mill targets; the pins are read from the CALLER's
+# repository, so a dependency or toolchain bump re-keys the caches and re-syncs with no
+# workflow change.
 #
-# Contract with the caller: a checked-in `./mill` bootstrap wrapper, and the
-# `soundnessVersion`/`SOUNDNESS_SCALA_RELEASE` pins in build.mill.
+# Contract with the caller: a checked-in `./mill` bootstrap wrapper, `etc/shared` with
+# `etc/github-ref` (the pinned commit of this repository whose scripts run), `etc/refs`,
+# and the `SOUNDNESS_SCALA_RELEASE` pin in build.mill.
 
 on:
   workflow_call:
@@ -34,12 +36,6 @@ on:
         description: The test suite's main class
         type: string
         default: ""
-      extra_releases:
-        description: Further GitHub-Releases libraries to sync before building, as
-          space-separated `owner/repo=X.Y.Z` pairs (`propensive/pyrocosm=0.1.0`); each is
-          synced with the Soundness sync script pointed at that repository
-        type: string
-        default: ''
       timeout:
         description: Job timeout in minutes
         type: number
@@ -52,12 +48,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The version pins live in the caller's build.mill; read them once so caches and the
-      # release sync follow a bump automatically.
+      # The toolchain pin lives in the caller's build.mill; the library pins in etc/refs.
       - name: Read version pins
         id: pins
         run: |
-          echo "soundness=$(sed -n 's/.*val soundnessVersion = "\(.*\)".*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
           echo "scala=$(sed -n 's/.*SOUNDNESS_SCALA_RELEASE", "\(.*\)").*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
 
       # Mill's bootstrap needs a JVM to start from; the build provisions its own toolchain
@@ -68,11 +62,12 @@ jobs:
           distribution: temurin
           java-version: 25
 
-      - name: Cache Soundness release
+      # Keyed by the pin file: a bump, or a snapshot pin, re-syncs; anything else is a hit.
+      - name: Cache pinned libraries
         uses: actions/cache@v5
         with:
           path: ~/.ivy2/local/dev.propensive
-          key: soundness-${{ steps.pins.outputs.soundness }}-${{ inputs.extra_releases }}
+          key: deps-${{ hashFiles('etc/refs') }}
       - name: Cache proscala toolchain
         uses: actions/cache@v5
         with:
@@ -85,29 +80,16 @@ jobs:
           key: coursier-${{ hashFiles('build.mill') }}
           restore-keys: coursier-
 
-      # Soundness releases are per-component jars, each embedding its own POM and ivy.xml;
-      # the sync script — fetched from the same Soundness tag, so script and release layout
-      # cannot drift apart — reconstructs the ivy2 layout coursier resolves from. The token
-      # only lifts the API rate limit. Idempotent: digest-matched jars are left alone.
-      - name: Sync the Soundness release
+      # Every pinned library is per-component jars on GitHub Releases, each embedding its own
+      # POM and ivy.xml, from which the sync script (run at the commit of this repository the
+      # caller pins in etc/github-ref) reconstructs the ivy2 layout coursier resolves from. A
+      # snapshot pin resolves to its `snapshot-<hex>` pre-release; there is no sibling checkout
+      # here, so a snapshot nobody has published fails the build by name. The token only lifts
+      # the API rate limit. Idempotent: digest-matched jars are left alone.
+      - name: Sync the pinned libraries
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.pins.outputs.soundness }}
-        run: |
-          curl -fsSL -o /tmp/sync_releases.py \
-            "https://raw.githubusercontent.com/propensive/soundness/$VERSION/etc/ci/sync_releases.py"
-          python3 /tmp/sync_releases.py "$VERSION"
-
-      # Libraries released the same way from other repositories (Pyrocosm, say): the same
-      # script, pointed at each repository in turn.
-      - name: Sync further releases
-        if: inputs.extra_releases != ''
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          for pair in ${{ inputs.extra_releases }}; do
-            SOUNDNESS_RELEASE_REPO="${pair%%=*}" python3 /tmp/sync_releases.py "${pair##*=}"
-          done
+        run: ./etc/shared sync-deps.sh
 
       - name: Compile
         if: inputs.compile != ''
