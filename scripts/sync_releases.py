@@ -33,6 +33,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -46,6 +47,7 @@ ASSET_NAME = re.compile(r"^(.+)-(\d+\.\d+\.\d+(?:-[0-9a-f]{12})?)\.jar$")
 NO_SUCH_RELEASE = 3
 DIGEST_PREFIX = "sha256:"
 WORKERS = 8
+RETRIES = 4
 
 
 @dataclass
@@ -134,11 +136,23 @@ def sha256(path: Path) -> str:
 
 
 def fetch(asset: Asset, destination: Path) -> None:
-    if asset.source.startswith("http"):
-        with urllib.request.urlopen(asset.source) as response, destination.open("wb") as file:
-            shutil.copyfileobj(response, file)
-    else:
+    """Downloads (or copies) one asset. A release of several hundred jars meets the occasional
+    transient failure from GitHub's CDN — a 5xx, a reset connection — so a download is retried
+    a few times with a growing pause before it counts as a failure."""
+    if not asset.source.startswith("http"):
         shutil.copy(asset.source, destination)
+        return
+    for attempt in range(1, RETRIES + 1):
+        try:
+            with urllib.request.urlopen(asset.source) as response, destination.open("wb") as file:
+                shutil.copyfileobj(response, file)
+            return
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as error:
+            transient = not isinstance(error, urllib.error.HTTPError) or error.code >= 500
+            if not transient or attempt == RETRIES:
+                raise
+            log(f"retrying {asset.artifact} {asset.version} after {error} (attempt {attempt})")
+            time.sleep(2 ** attempt)
 
 
 def install(asset: Asset, ivy_local: Path) -> str:
