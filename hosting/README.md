@@ -1,45 +1,51 @@
-# `<tool>.propensive.dev`
+# `propensive.dev/<tool>`
 
 Each application released from a propensive repository is installed with one line,
 
 ```sh
-curl -fsSL https://<tool>.propensive.dev/ | sh
+curl -fsSL https://propensive.dev/<tool> | sh
 ```
 
-and that URL is a Firebase Hosting site that does nothing but redirect (302) *every* path to
-`https://github.com/propensive/<tool>/releases/latest/download/install.sh`, the installer
+and that URL is a single Firebase Hosting site that does nothing but redirect (302) each tool's
+path to `https://github.com/propensive/<tool>/releases/latest/download/install.sh`, the installer
 `release-launcher.sh` attaches to each release (`generate-install.sh` writes it). Nothing is
-hosted; GitHub always serves the latest release.
+hosted; GitHub always serves the latest release. Everything else, including `/`, redirects to
+`https://propensive.com/`.
 
-This directory is the versioned configuration of those sites, deployed with the Firebase CLI:
+This directory is the versioned configuration of that site, deployed with the Firebase CLI:
 
 ```sh
 cd hosting
 firebase login                 # once
-firebase deploy --only hosting # every site in firebase.json, or --only hosting:flair for one
+firebase deploy --only hosting
 ```
 
 ## How it fits together
 
 | piece | where | what |
 |---|---|---|
-| Firebase project | `propensive-infrastructure` (assumed from the site fume resolves to today; correct `.firebaserc` if the project id differs) | holds every site below |
-| Hosting site | `<tool>-propensive` | one per tool, so each can redirect to its own repository — a site's redirects cannot depend on the host name, which is why one site cannot serve every tool |
-| deploy target | `firebase.json` / `.firebaserc` | `hosting[].target` ↔ `targets.<project>.hosting.<tool>` ↔ site id |
-| custom domain | Firebase console → Hosting → the site → *Add custom domain* | `<tool>.propensive.dev`, verified by a TXT record, served by the site's certificate |
-| DNS | Cloud DNS, zone `propensive.dev` (the `ns-cloud-d*.googledomains.com` name servers) | `<tool>.propensive.dev CNAME <tool>-propensive.web.app.` plus the TXT record the console asks for |
+| Firebase project | `propensive-infrastructure` | holds the site below |
+| Hosting site | `propensive-dev` | one site for every tool, which is what putting the tool in the path buys: the redirect can depend on the path, never on the host name |
+| deploy target | `firebase.json` / `.firebaserc` | `hosting[].target` ↔ `targets.<project>.hosting.propensive` ↔ site id |
+| custom domain | Firebase console → Hosting → the site → *Add custom domain* | `propensive.dev`, verified by a TXT record, served by the site's certificate |
+| DNS | Cloud DNS, zone `propensive.dev` (the `ns-cloud-d*.googledomains.com` name servers) | the A records the custom domain's `requiredDnsUpdates` asks for — an apex cannot be a CNAME — plus that TXT record |
 
-The redirect target itself never changes, so a deploy is needed only when a tool is added.
+Redirects are matched in order and the first match wins, so the catch-all `**` to
+`https://propensive.com/` must stay last in `firebase.json`. Each tool needs *two* globs: a bare
+`/fume` does not match `/fume/**`, and both forms should work.
+
+Until September 2026 this was one site per tool (`<tool>-propensive`, serving
+`<tool>.propensive.dev`), because a site's redirects cannot depend on the host name. Those sites
+are superseded by this one, and are deleted — domain first, then site, then the Cloud DNS
+records — once `propensive.dev` itself is serving.
 
 ## Adding a tool (`tel`, `lira`, …)
 
-1. Add its entry to `firebase.json` and `.firebaserc` (the pattern is identical per tool).
-2. Create the site: `firebase hosting:sites:create <tool>-propensive` (or in the console).
-3. `firebase deploy --only hosting:<tool>`.
-4. In the console, add the custom domain `<tool>.propensive.dev` to the site; add the TXT
-   record it shows and the CNAME to `<tool>-propensive.web.app.` in Cloud DNS.
-5. Once the certificate is issued, `curl -sI https://<tool>.propensive.dev/` answers 302 to the
-   release's `install.sh`.
+1. Add the `/<tool>` and `/<tool>/**` redirect entries to `firebase.json`, *above* the catch-all.
+2. `firebase deploy --only hosting`.
+3. `curl -sI https://propensive.dev/<tool>` answers 302 to the release's `install.sh`.
+
+No site, domain or DNS work is involved — that is the point of the path-based scheme.
 
 The repository must publish `install.sh` with each release, which `release-launcher.sh` does
 for any repository using it.
@@ -56,22 +62,28 @@ API=https://firebasehosting.googleapis.com/v1beta1
 P=propensive-infrastructure
 auth=(-H "Authorization: Bearer $T" -H "x-goog-user-project: $P" -H "Content-Type: application/json")
 
-# a site
-curl -sS -X POST "${auth[@]}" -d '{}' "$API/projects/$P/sites?siteId=<tool>-propensive"
-# its redirect, as a finalized, released version
-V=$(curl -sS -X POST "${auth[@]}" -d '{"config":{"redirects":[{"glob":"**","statusCode":302,
-  "location":"https://github.com/propensive/<tool>/releases/latest/download/install.sh"}]}}' \
-  "$API/sites/<tool>-propensive/versions" | jq -r .name)
+# the site
+curl -sS -X POST "${auth[@]}" -d '{}' "$API/projects/$P/sites?siteId=propensive-dev"
+# its redirects, as a finalized, released version (the same list as firebase.json, in order)
+V=$(curl -sS -X POST "${auth[@]}" -d @- "$API/sites/propensive-dev/versions" <<'JSON' | jq -r .name
+{"config":{"redirects":[
+  {"glob":"/fume","statusCode":302,
+   "location":"https://github.com/propensive/fume/releases/latest/download/install.sh"},
+  {"glob":"/fume/**","statusCode":302,
+   "location":"https://github.com/propensive/fume/releases/latest/download/install.sh"},
+  {"glob":"**","statusCode":302,"location":"https://propensive.com/"}]}}
+JSON
+)
 curl -sS -X PATCH "${auth[@]}" -d '{"status":"FINALIZED"}' "$API/$V?updateMask=status"
-curl -sS -X POST "${auth[@]}" -d '{}' "$API/sites/<tool>-propensive/releases?versionName=$V"
+curl -sS -X POST "${auth[@]}" -d '{}' "$API/sites/propensive-dev/releases?versionName=$V"
 # the custom domain, whose `requiredDnsUpdates` say what to put in Cloud DNS
 curl -sS -X POST "${auth[@]}" -d '{}' \
-  "$API/projects/$P/sites/<tool>-propensive/customDomains?customDomainId=<tool>.propensive.dev"
-curl -sS "${auth[@]}" "$API/projects/$P/sites/<tool>-propensive/customDomains/<tool>.propensive.dev"
-# the DNS record it asks for
-gcloud dns record-sets create <tool>.propensive.dev. --zone propensive-dev --project $P \
-  --type CNAME --ttl 300 --rrdatas <tool>-propensive.web.app.
+  "$API/projects/$P/sites/propensive-dev/customDomains?customDomainId=propensive.dev"
+curl -sS "${auth[@]}" "$API/projects/$P/sites/propensive-dev/customDomains/propensive.dev"
+# the records it asks for, e.g.
+gcloud dns record-sets create propensive.dev. --zone propensive-dev --project $P \
+  --type A --ttl 300 --rrdatas <the addresses from requiredDnsUpdates>
 ```
 
-Ownership and the certificate follow within minutes of the CNAME resolving; the domain's
+Ownership and the certificate follow within minutes of the records resolving; the domain's
 `hostState`, `ownershipState` and `certState` all read `*_ACTIVE` once it is serving.

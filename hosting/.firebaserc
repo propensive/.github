@@ -5,20 +5,8 @@
   "targets": {
     "propensive-infrastructure": {
       "hosting": {
-        "flame": [
-          "flame-propensive"
-        ],
-        "fume": [
-          "fume-propensive"
-        ],
-        "flair": [
-          "flair-propensive"
-        ],
-        "tel": [
-          "tel-propensive"
-        ],
-        "lira": [
-          "lira-propensive"
+        "propensive": [
+          "propensive-dev"
         ]
       }
     }

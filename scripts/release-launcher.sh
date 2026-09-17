@@ -182,7 +182,7 @@ if [[ -n "$SCRIPT_DIGEST" ]]; then
   SNIPPET=$(printf 'Install (any POSIX shell):\n\n```sh\nopenssl base64 -d <<EOF | sh -s -- https://github.com/%s/releases/download/%s/%s %s\nZj1gbWt0ZW1wYDtjdXJsIC1zTG8gJGYgJDF8fHdnZXQgLXFPICRmICQxO2Nhc2UgYG9wZW5zc2wg\nZGdzdCAtc2hhMjU2ICRmYCBpbiAqJDIpY2htb2QgK3ggJGY7ZXhlYyAkZjtlc2Fj\nEOF\n```\n\n' "$REPO" "$VERSION" "$NAME" "$SCRIPT_DIGEST")
 fi
 
-# The installer served from https://<name>.propensive.dev/ (`curl -fsSL … | sh`): plain POSIX
+# The installer served from https://propensive.dev/<name> (`curl -fsSL … | sh`): plain POSIX
 # shell, embedding this release's per-platform digests, generated once they are all known and
 # attached to the release as `install.sh` — the domain redirects to that asset.
 "$PROPENSIVE_SHARED" generate-install.sh "$NAME" "$VERSION" > "$DIST/install.sh"
