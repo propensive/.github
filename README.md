@@ -1,56 +1,83 @@
 # Shared repository infrastructure
 
-Everything Propensive's repositories share: community files, reusable GitHub Actions
-workflows, and the GitHub configuration they are all held to.
+Reusable GitHub Actions workflows and scripts for Propensive's Soundness-ecosystem repositories
+([soundness](https://github.com/propensive/soundness), [pyrocosm](https://github.com/propensive/pyrocosm),
+[fume](https://github.com/propensive/fume), [flame](https://github.com/propensive/flame),
+[flair](https://github.com/propensive/flair) and [xeq](https://github.com/propensive/xeq)).
 
-## Community files
+## Scripts, through `etc/shared`
 
-`pull_request_template.md`, `contributing.md`, `code_of_conduct.md` and `security.md` are
-GitHub's *default community health files*: every public repository under `propensive` that
-does not carry its own copy uses these. Change them here, not in a repository. (A licence is
-never inherited, so each repository keeps its own.)
+Each repository carries a copy of `scripts/shared` as `etc/shared`, and pins a commit of this
+repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at that commit
+(cached under `~/.cache/propensive/github/<sha>/`) and runs it in the calling repository. Set
+`PROPENSIVE_GITHUB=/path/to/this/checkout` to run a working copy instead.
 
-## GitHub configuration
+| script | what it does |
+|---|---|
+| `sync-deps.sh` | installs every library pinned in `etc/refs`, transitively, into `~/.ivy2/local` |
+| `snapshot.sh <name> <base>` | publishes an unreleased build as a `snapshot-<hex>` pre-release, for others to pin |
+| `snapshot-prune.sh <name> [days]` | deletes old snapshot pre-releases |
+| `deps.py walk\|check` | the pin file's transitive closure; `check` is the gate every release runs |
+| `release-launcher.sh` | releases an application: its library jars, then its executables |
+| `sync_releases.py`, `filtered_tree.py` | the helpers the above are built on |
+| `xeq-fetch.sh`, `generate-install.sh` | the `xeq` builder pin, and the installer script |
 
-`bin/settings check` reports how each repository in `settings/repos.tsv` differs from the
-settings, and `bin/settings apply` makes it match. The settings are:
+## Dependency pins: `etc/refs`
 
- -  `settings/repository.json`: merge options and auto-merge, wiki/discussions/projects,
-    secret scanning, the Actions token's default permissions, and which community files a
-    repository must *not* override;
- -  `settings/ruleset.json`: the `rules` ruleset on `main`, which requires every change to
-    arrive through a pull request with signed, linear history and passing checks;
- -  `settings/repos.tsv`: the repositories, and the status checks each one's ruleset
-    requires. Check names depend on how a repository runs CI: a job `build` in a local
-    workflow is `build`, while a job `build` calling one of the workflows below is
-    `build / build`.
+Every propensive library a repository builds against is pinned in `etc/refs`, one per line,
+tab-separated:
 
-`propensive` is a personal account, so there are no account-level rulesets: `apply` copies
-the ruleset into each repository. Add a repository by adding a line to `repos.tsv`, making
-sure its checks already run on pull requests, and running `bin/settings apply <repo>`.
+```
+# repository            version               commit (snapshots only)
+propensive/soundness    0.66.0
+propensive/pyrocosm     0.2.0-3f9a1c2b7d4e    8c1e0d5a9b2f…(40 hex)
+```
 
-## Shared scripts
+A version `X.Y.Z` is a **release**, the jars under the GitHub Release of that tag. A version
+`X.Y.Z-<12 hex>` is a **snapshot**: an unreleased build, published by `make snapshot` in the
+upstream repository as the pre-release tagged `snapshot-<12 hex>`, where the hex is the start
+of the *filtered tree hash* of the commit it was built from (its tree minus everything
+`.dockerignore` excludes, so a rebase or a documentation change does not make a new snapshot)
+and `X.Y.Z` is the version that repository declares for its next release. A snapshot sorts
+below the release it precedes, so once `X.Y.Z` is released, bumping the pin is enough.
 
-`scripts/` holds the release and setup scripts that used to be copied between repositories.
-A repository runs them through `etc/shared`, a copy of `scripts/shared`, which fetches a
-script from this repository at the commit pinned in the repository's `etc/github-ref`, caches
-it under `~/.cache/propensive/github/<sha>/`, and runs it in the calling repository:
+Pins are transitive: a snapshot's own `etc/refs` (at the pinned tag) names what it was
+built against, and `sync-deps.sh` installs that too. A snapshot must be pinned identically
+wherever it is reached; two releases of one library merely evict as usual.
 
- -  `etc/shared xeq-fetch.sh` fetches the `xeq` builder pinned in `etc/xeq.tsv` into `dist/xeq`;
- -  `etc/shared sync-releases.sh <owner/repo> <pin> [X.Y.Z | --staged]` installs a
-    GitHub-Releases library into `~/.ivy2/local`, at the version of `val <pin>` in `build.mill`
-    by default (for example `propensive/pyrocosm pyrocosmVersion`);
- -  `etc/shared release-launcher.sh <name> "<library> …" X.Y.Z` publishes an application's
-    libraries and then its executables, installer and bootstrap to GitHub Releases;
- -  `etc/shared generate-install.sh <name> X.Y.Z` writes the `curl … | sh` installer for a
-    release (run by `release-launcher.sh`).
+The build reads the file through a `deps` object in `build.mill`, so the pin lives in one
+place; the CI cache is keyed on the file's hash. `Task.Source`, not a `val`: the Mill daemon
+only re-evaluates the build script when `build.mill` changes.
 
-Pinning a full SHA means a change here reaches a repository only when that repository bumps
-its pin, in a reviewed commit. To try a change to a script before it is merged, set
-`PROPENSIVE_GITHUB` to a checkout of this repository.
+```scala
+object deps extends Module:
+  def file = Task.Source(mill.api.BuildCtx.workspaceRoot / "etc" / "refs")
+  def pins: T[Map[String, String]] = Task:
+    os.read.lines(file().path).map(_.trim).filter(l => l.nonEmpty && !l.startsWith("#"))
+      .map(_.split("\t").map(_.trim).filter(_.nonEmpty))
+      .map(cols => cols(0).stripPrefix("propensive/") -> cols(1)).toMap
+  def version(name: String): Task[String] = Task.Anon:
+    pins().getOrElse(name, sys.error(s"etc/refs has no pin for $name"))
 
-Soundness keeps its own `etc/ci` scripts: its release and `xeq-fetch.sh` are part of the input
-set its CI attestation signs, so they stay in that repository.
+// then, in a module:
+def mvnDeps = Task(Seq(mvn"dev.propensive:pyrocosm-model:${deps.version("pyrocosm")()}"))
+```
+
+### The flow
+
+1. In the upstream (Soundness, say), commit the change a downstream needs, and run
+   `make snapshot`. It stages the jars at `<next>-<hex>`, installs them locally, uploads them
+   as `snapshot-<hex>` (skipped if that snapshot already exists), and prints the pin line.
+2. In the downstream, paste the line into `etc/refs`. `make sync-deps` installs it (or,
+   for a snapshot not yet on GitHub, builds it from the sibling checkout named by the commit);
+   CI does the same on the PR, which can now merge.
+3. When the upstream is released, replace the pin with the release. `make release` refuses to
+   run while any pin, transitively, is a snapshot (`deps.py check`).
+4. `make snapshot-prune` in the upstream, occasionally.
+
+The repository's own version stays a plain `val <name>Version = "X.Y.Z"` in `build.mill`;
+`publishVersion` is a `Task.Input` that `<NAME>_RELEASE_VERSION` overrides through `Task.env`,
+which is how `snapshot.sh` drives the snapshot version through a running Mill daemon.
 
 ## `scala-ci.yml`
 
@@ -74,34 +101,12 @@ jobs:
       publish_local: fume.client
       assembly:      fume.launcher.assembly
       test_assembly: fume.test.assembly
-      test_main:     fume.Tests
+      test_main:     fume.runTests
 ```
 
-Used by [pyrocosm](https://github.com/propensive/pyrocosm),
-[fume](https://github.com/propensive/fume), [flame](https://github.com/propensive/flame) and
-[xeq](https://github.com/propensive/xeq). The workflow expects of its caller:
+The workflow expects of its caller: a checked-in `./mill` bootstrap wrapper; `etc/shared` and
+`etc/github-ref`; `etc/refs`, which it syncs with `sync-deps.sh` before building; and the
+`SOUNDNESS_SCALA_RELEASE", "…"` toolchain pin in `build.mill`, which keys the toolchain cache.
 
- -  a checked-in `./mill` bootstrap wrapper;
- -  `val soundnessVersion = "X.Y.Z"` and `SOUNDNESS_SCALA_RELEASE", "…"` pins in `build.mill`,
-    which it reads to key its caches and to sync the pinned Soundness release from GitHub
-    Releases into `~/.ivy2/local` (using the release's own `sync_releases.py`, fetched from
-    the same tag so script and release layout cannot drift apart).
-
-`test_assembly` and `test_main` may be omitted for a repository whose suites cannot yet run
-with plain `java`.
-
-A `scala-release.yml` counterpart is deliberately deferred until Ziggurat owns the release
-pipeline (soundness#1958); until then, releases run locally via each repository's
-`make release`.
-
-## `rust-ci.yml`
-
-Runs `cargo test --workspace --locked` on a Cargo workspace, with the registry and target
-directory cached. Used by [tel](https://github.com/propensive/tel) and
-[xeq](https://github.com/propensive/xeq).
-
-```yaml
-jobs:
-  build:
-    uses: propensive/.github/.github/workflows/rust-ci.yml@main
-```
+Releases run locally via each repository's `make release`; a `scala-release.yml` counterpart is
+deferred until Ziggurat owns the release pipeline (soundness#1958).

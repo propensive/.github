@@ -8,8 +8,8 @@
 #
 # for example `etc/shared release-launcher.sh flame "flame-core flame-web flame-client" 0.2.0`. The
 # calling repository is expected to have a `<name>.launcher` assembly, a module per library
-# (`flame-core` is `flame.core`), a `val <name>Version = sys.env.getOrElse("<NAME>_VERSION", …)`
-# pin in build.mill, and an etc/xeq.tsv pin for the `xeq` builder.
+# (`flame-core` is `flame.core`), a `val <name>Version = "X.Y.Z"` pin in build.mill, an
+# etc/refs naming only released dependencies, and an etc/xeq.tsv pin for the `xeq` builder.
 #
 # The assets have a strict order between them — the launcher's repackaged form externalizes each
 # library by matching its SHA-256 digest against the release's PUBLISHED assets — so the release
@@ -49,10 +49,9 @@ if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # The version is the coordinate the launcher resolves (`<name>Version` in build.mill), so a
-# release of anything else would disagree with itself. The <NAME>_VERSION environment override
-# cannot help here: the Mill daemon freezes the build script's `sys.env` (see the note in
-# build.mill), so the pin must be edited and committed.
-PINNED=$(sed -n "s/.*val ${NAME}Version = sys.env.getOrElse(\"${UPPER}_VERSION\", \"\\(.*\\)\").*/\\1/p" build.mill)
+# release of anything else would disagree with itself; the pin must be edited and committed.
+# (`<NAME>_RELEASE_VERSION` overrides `publishVersion` for snapshots, never for a release.)
+PINNED=$(sed -n "s/.*val ${NAME}Version = \"\\(.*\\)\".*/\\1/p" build.mill)
 if [[ "$PINNED" != "$VERSION" ]]; then
   echo "fatal: build.mill pins ${NAME}Version=$PINNED, not $VERSION; bump and commit first" >&2
   exit 1
@@ -60,6 +59,10 @@ fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "fatal: the working tree is not clean" >&2; exit 1
 fi
+
+# A release may depend only on releases: every pin in etc/refs, transitively, must be a
+# published X.Y.Z (a snapshot is an unreleased build that may be deleted; see deps.py).
+"$PROPENSIVE_SHARED" deps.py check
 
 # The `xeq` builder script packages the executables and the dispatcher. Fetch (and verify) it
 # before anything is published, so a failed download cannot leave a half-made release behind.
