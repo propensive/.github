@@ -14,7 +14,8 @@ repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at
 
 | script | what it does |
 |---|---|
-| `sync-deps.sh` | installs every library pinned in `etc/refs`, transitively, into `~/.ivy2/local` |
+| `sync-deps.sh` | installs every library pinned in `etc/refs`, transitively, and every tool's jars from `etc/tools`, into `~/.ivy2/local` |
+| `tools.sh` | installs the commands pinned in `etc/tools` through their releases' installers |
 | `snapshot.sh <name> <base>` | publishes an unreleased build as a `snapshot-<hex>` pre-release, for others to pin |
 | `snapshot-prune.sh <name> [days]` | deletes old snapshot pre-releases |
 | `deps.py walk\|check` | the pin file's transitive closure; `check` is the gate every release runs |
@@ -62,6 +63,29 @@ object deps extends Module:
 // then, in a module:
 def mvnDeps = Task(Seq(mvn"dev.propensive:pyrocosm-model:${deps.version("pyrocosm")()}"))
 ```
+
+## Tools are pinned in `etc/tools`, and are always releases
+
+A **dependency** is what a repository's jars are compiled against, and what their POMs will
+name: Soundness for Pyrocosm, Pyrocosm for fume. A **tool** is what a repository *runs*: fume
+to run its tests, flair to check its sources, the flair compiler plugin Soundness loads with
+`-Xplugin`. A tool never appears in a POM, so it is pinned separately, in `etc/tools`, in the
+same shape as `etc/refs` but with two rules: a tool is always a release (`deps.py` rejects a
+snapshot there), and a tool is not part of the transitive closure and does not gate a release,
+because a release of it exists by definition.
+
+```
+# repository          version
+propensive/fume       0.3.0
+propensive/flair      0.2.0
+```
+
+This is what keeps the release graph acyclic. Soundness runs flair, flair depends on Pyrocosm,
+Pyrocosm depends on Soundness; were the first of those a dependency, no one of the three could
+be released before the other two. `sync-deps.sh` installs a tool's jars (for a plugin), and
+`make tools` runs `tools.sh`, which installs a tool's command through its release's
+`install.sh`. A repository that is both a tool to one consumer and a dependency to another is
+simply named in both files, by their respective consumers.
 
 ### The flow
 
