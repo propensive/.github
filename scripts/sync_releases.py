@@ -47,7 +47,7 @@ ASSET_NAME = re.compile(r"^(.+)-(\d+\.\d+\.\d+(?:-[0-9a-f]{12})?)\.jar$")
 NO_SUCH_RELEASE = 3
 DIGEST_PREFIX = "sha256:"
 WORKERS = 8
-RETRIES = 4
+RETRIES = 8
 
 
 @dataclass
@@ -138,7 +138,9 @@ def sha256(path: Path) -> str:
 def fetch(asset: Asset, destination: Path) -> None:
     """Downloads (or copies) one asset. A release of several hundred jars meets the occasional
     transient failure from GitHub's CDN — a 5xx, a reset connection — so a download is retried
-    a few times with a growing pause before it counts as a failure."""
+    several times, with a pause growing to half a minute, before it counts as a failure: one
+    asset of Soundness's six hundred has answered 500 four times in a row on a GitHub runner
+    while downloading cleanly elsewhere."""
     if not asset.source.startswith("http"):
         shutil.copy(asset.source, destination)
         return
@@ -152,7 +154,7 @@ def fetch(asset: Asset, destination: Path) -> None:
             if not transient or attempt == RETRIES:
                 raise
             log(f"retrying {asset.artifact} {asset.version} after {error} (attempt {attempt})")
-            time.sleep(2 ** attempt)
+            time.sleep(min(2 ** attempt, 30))
 
 
 def install(asset: Asset, ivy_local: Path) -> str:
