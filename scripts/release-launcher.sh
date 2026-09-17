@@ -62,8 +62,11 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 # A release may depend only on releases: every pin in etc/refs, transitively, must be a
-# published X.Y.Z (a snapshot is an unreleased build that may be deleted; see deps.py).
+# published X.Y.Z (a snapshot is an unreleased build that may be deleted; see deps.py). Then
+# install exactly those, so the libraries are built against the released jars and not against
+# whatever a sibling checkout's publishLocal or an earlier snapshot left under the same version.
 "$PROPENSIVE_SHARED" deps.py check
+"$PROPENSIVE_SHARED" sync-deps.sh
 
 # The `xeq` builder script packages the executables and the dispatcher. Fetch (and verify) it
 # before anything is published, so a failed download cannot leave a half-made release behind.
