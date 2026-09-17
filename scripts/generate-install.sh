@@ -1,8 +1,8 @@
 #!/bin/sh
 #
 # Generates the install script for a release of an application published from propensive/<name>,
-# served from https://<name>.propensive.dev/, embedding the release's per-platform digests. Run by
-# release-launcher.sh once every executable's digest is known.
+# served from https://propensive.dev/<name>, embedding the release's per-platform digests. Run
+# by release-launcher.sh once every executable's digest is known.
 #
 # Usage: etc/shared generate-install.sh <name> X.Y.Z > install.sh
 
@@ -23,9 +23,9 @@ BOX() { printf '# ┃  %-82s┃\n' "$1"; }
 cat <<EOF
 #!/bin/sh
 
-# The $NAME installer, served from https://$NAME.propensive.dev/ for:
+# The $NAME installer, served from https://propensive.dev/$NAME for:
 #
-#     curl -fsSL https://$NAME.propensive.dev/ | sh
+#     curl -fsSL https://propensive.dev/$NAME | sh
 #
 # Detects the operating system and CPU architecture, downloads the matching \`$NAME\`
 # executable from the GitHub release, verifies its SHA-256 against the digest embedded
@@ -111,7 +111,7 @@ echo "The first run fetches $NAME's dependencies; subsequent runs start instantl
 # ┃  If this script has been PRINTED to your terminal, it has not been run: you are    ┃
 # ┃  looking at the installer itself. To download and run it in one step, invoke:      ┃
 # ┃                                                                                    ┃
-$(BOX "    curl -fsSL https://$NAME.propensive.dev/ | sh")
+$(BOX "    curl -fsSL https://propensive.dev/$NAME | sh")
 # ┃                                                                                    ┃
 # ┃  or, if you have already saved it to a file:                                       ┃
 # ┃                                                                                    ┃

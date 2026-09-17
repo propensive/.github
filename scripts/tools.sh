@@ -2,7 +2,7 @@
 #
 # Install the commands this repository runs, at the versions pinned in etc/tools (see deps.py):
 # each is an application released from propensive/<name> with an `install.sh` asset — the
-# installer https://<name>.propensive.dev/ serves — which downloads the executable for this
+# installer https://propensive.dev/<name> serves — which downloads the executable for this
 # machine, verifies its digest and puts it on the path. A tool whose release has no installer
 # (a compiler plugin, say) is a jar, installed by sync-deps.sh instead, and is skipped here.
 #
