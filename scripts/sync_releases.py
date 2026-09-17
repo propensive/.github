@@ -15,6 +15,8 @@ Usage: sync_releases.py --repo owner/repo X.Y.Z        one release
        sync_releases.py --repo owner/repo --tag <tag>   the release under <tag>, whatever its
                                                         name: a `snapshot-<hex>` pre-release
        sync_releases.py --staged [directory]            the jars of a local `./mill release.stage`
+       sync_releases.py --lenient …                     skip, rather than fail on, a jar without an
+                                                        embedded POM (a command-only tool release)
 
 Assets are recognised by name, `<artifactId>-<version>.jar`, where the version is `X.Y.Z` or
 `X.Y.Z-<12 hex>` (a snapshot). Exit status 3 means the repository has no such release, which
@@ -204,8 +206,13 @@ def main(arguments: list[str]) -> None:
     repo = os.environ.get("SOUNDNESS_RELEASE_REPO", "propensive/soundness")
     ivy_local = Path(os.environ.get("IVY_LOCAL", str(Path.home() / ".ivy2" / "local")))
     tag: str | None = None
+    lenient = False
 
-    while arguments and arguments[0] in ("--repo", "--tag"):
+    while arguments and arguments[0] in ("--repo", "--tag", "--lenient"):
+        if arguments[0] == "--lenient":
+            lenient = True
+            arguments = arguments[1:]
+            continue
         if len(arguments) < 2:
             fail(f"{arguments[0]} needs a value")
         if arguments[0] == "--repo":
@@ -244,7 +251,7 @@ def main(arguments: list[str]) -> None:
     if not assets:
         fail("nothing to sync")
 
-    outcomes: dict[str, int] = {"fresh": 0, "current": 0, "repaired": 0}
+    outcomes: dict[str, int] = {"fresh": 0, "current": 0, "repaired": 0, "skipped": 0}
     failures: list[str] = []
 
     def work(asset: Asset) -> None:
@@ -254,13 +261,17 @@ def main(arguments: list[str]) -> None:
             if outcome != "current":
                 log(f"{outcome}: {asset.artifact} {asset.version}")
         except Exception as error:  # report every failure, then exit non-zero below
-            failures.append(str(error))
+            if lenient and "predates self-describing releases" in str(error):
+                outcomes["skipped"] += 1
+                log(f"skipped: {asset.artifact} {asset.version} (no embedded POM)")
+            else:
+                failures.append(str(error))
 
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
         list(pool.map(work, assets))
 
     log(f"{outcomes['fresh']} installed, {outcomes['repaired']} repaired, "
-        f"{outcomes['current']} already current, in {ivy_local}")
+        f"{outcomes['current']} already current, {outcomes['skipped']} skipped, in {ivy_local}")
     if failures:
         for failure in failures:
             print(f"sync-releases: {failure}", file=sys.stderr)
