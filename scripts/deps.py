@@ -33,9 +33,12 @@ Pins are TRANSITIVE: a snapshot of Pyrocosm was built against some exact Soundne
 Pyrocosm's own etc/refs at that commit, and its POMs refer to that version, so a consumer
 of the snapshot must install it too. `walk` fetches each pinned repository's etc/refs at
 the pinned tag (from raw.githubusercontent.com; a release predating the file has no pins) and
-follows it, depth first. Reaching one repository at two different versions is an error if
-either is a snapshot — two builds that would disagree about what an unreleased library IS —
-and merely two releases otherwise, which coursier evicts as usual.
+follows it, depth first. Reaching one repository at two versions is fine when the direct pin
+supersedes a release reached transitively — a tool may need a Soundness newer than the one
+Pyrocosm was built against, and coursier evicts to the direct pin's version, which is installed
+alongside — and an error when two different snapshots meet, or when a snapshot is reached only
+transitively while something else is pinned here: two builds would disagree about what an
+unreleased library IS.
 
 Usage: deps.py walk [file]     the closure, as `repo TAB version TAB tag TAB kind [TAB commit]`
                                lines, dependencies before dependents
@@ -84,6 +87,10 @@ class Pin:
 def fail(message: str) -> None:
     print(f"deps: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def log(message: str) -> None:
+    print(f"deps: {message}", file=sys.stderr)
 
 
 def kind_of(version: str) -> str:
@@ -145,9 +152,14 @@ def walk(pins: list[Pin]) -> list[Pin]:
 
     def visit(pin: Pin, via: str) -> None:
         seen = chosen.get(pin.repo)
-        if seen is not None and seen.version != pin.version and "snapshot" in (seen.kind, pin.kind):
-            fail(f"{pin.repo} is pinned at {seen.version} and, via {via}, at {pin.version}; "
-                 "a snapshot must be pinned identically everywhere it is reached")
+        if seen is not None and seen.version != pin.version:
+            if seen.kind == "snapshot" and pin.kind == "snapshot":
+                fail(f"{pin.repo} is pinned at {seen.version} and, via {via}, at {pin.version}; "
+                     "two different snapshots of one library cannot both be what it IS")
+            if via != "etc/refs" and pin.kind == "snapshot":
+                fail(f"{pin.repo} is reached at the snapshot {pin.version} via {via}, but pinned "
+                     f"at {seen.version} here; pin the snapshot directly, or drop it upstream")
+            log(f"{pin.repo}: {seen.version} (pinned here) supersedes {pin.version} (via {via})")
         key = (pin.repo, pin.version)
         if key in done:
             return
