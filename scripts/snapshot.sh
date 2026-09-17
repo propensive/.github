@@ -50,6 +50,13 @@ if [[ "$LOCAL" != 1 ]]; then
 fi
 
 COMMIT=$(git rev-parse HEAD)
+
+# The pre-release is created against the commit, which GitHub must therefore already have: a
+# snapshot of an unpushed commit would be one nobody else could trace back to its sources.
+if [[ "$LOCAL" != 1 ]] && ! gh api "repos/$REPO/commits/$COMMIT" --silent >/dev/null 2>&1; then
+  echo "snapshot: $REPO does not have commit ${COMMIT:0:12}; push the branch first" >&2; exit 1
+fi
+
 TREE=$("$PROPENSIVE_SHARED" filtered_tree.py HEAD)
 HEX=${TREE:0:12}
 VERSION="$BASE-$HEX"
@@ -93,12 +100,14 @@ nothing pins it."
 
   # GitHub computes each asset's SHA-256 shortly after upload; wait for them all and confirm
   # each is the digest of the local file, since that is what a consumer will verify against.
+  # Through the REST API, as release-launcher.sh does: `gh release view --json assets` does
+  # not expose the digest.
   for jar in "${jars[@]}"; do
     name=$(basename "$jar")
     local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
     digest=""
     for i in $(seq 1 60); do
-      digest=$(gh release view "$TAG" --repo "$REPO" --json assets \
+      digest=$(gh api "repos/$REPO/releases/tags/$TAG" \
         --jq ".assets[] | select(.name == \"$name\") | .digest // \"\"" 2>/dev/null || true)
       [[ -n "$digest" ]] && break
       sleep 5
