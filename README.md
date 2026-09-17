@@ -125,12 +125,13 @@ jobs:
       publish_local: fume.client
       assembly:      fume.launcher.assembly
       test_assembly: fume.test.assembly
-      test_main:     fume.runTests
 ```
 
 The workflow expects of its caller: a checked-in `./mill` bootstrap wrapper; `etc/shared` and
-`etc/github-ref`; `etc/refs`, which it syncs with `sync-deps.sh` before building; and the
-`SOUNDNESS_SCALA_RELEASE", "…"` toolchain pin in `build.mill`, which keys the toolchain cache.
+`etc/github-ref`; `etc/refs`, which it syncs with `sync-deps.sh` before building; `etc/tools`
+naming the fume release that runs the suites in `test_assembly` (installed with `tools.sh`);
+and the `SOUNDNESS_SCALA_RELEASE", "…"` toolchain pin in `build.mill`, which keys the
+toolchain cache. `test_main` is ignored: fume discovers the suites from the assembly.
 
 Releases run locally via each repository's `make release`; a `scala-release.yml` counterpart is
 deferred until Ziggurat owns the release pipeline (soundness#1958).

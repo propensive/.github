@@ -2,8 +2,8 @@ name: Scala CI
 
 # Reusable CI for Soundness-ecosystem applications: install every library pinned in the
 # caller's etc/refs (releases and snapshots alike, transitively — see scripts/deps.py) from
-# GitHub Releases into ~/.ivy2/local, compile, publish any locally-resolved module, assemble,
-# and run the test suite. Callers name their Mill targets; the pins are read from the CALLER's
+# GitHub Releases into ~/.ivy2/local, install the tools pinned in its etc/tools, compile,
+# publish any locally-resolved module, assemble, and run the test suites with fume. Callers name their Mill targets; the pins are read from the CALLER's
 # repository, so a dependency or toolchain bump re-keys the caches and re-syncs with no
 # workflow change.
 #
@@ -28,12 +28,14 @@ on:
         type: string
         default: ""
       test_assembly:
-        description: The Mill assembly target holding the test suite; no tests are run if empty
-          (for a repository whose suites need a host runner, such as xeq's)
+        description: The Mill assembly target holding the test suites, which fume — the
+          release pinned in the caller's etc/tools — discovers and runs; no tests are run if
+          empty
         type: string
         default: ""
       test_main:
-        description: The test suite's main class
+        description: Ignored. Tests are run by fume, not by a main class; the input remains
+          declared so a caller that still passes it does not fail at startup
         type: string
         default: ""
       timeout:
@@ -91,6 +93,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: ./etc/shared sync-deps.sh
 
+      # The commands pinned in etc/tools — fume, for the tests — installed through their
+      # releases' installers into ~/.local/bin, which is put on the path for the later steps.
+      - name: Install the pinned tools
+        if: inputs.test_assembly != ''
+        run: |
+          ./etc/shared tools.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Compile
         if: inputs.compile != ''
         run: |
@@ -105,10 +115,13 @@ jobs:
         run: |
           for target in ${{ inputs.assembly }}; do ./mill "$target"; done
 
-      # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar.
+      # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar. fume
+      # discovers every suite in it from the META-INF/services/probably.Suite index, renders
+      # tersely under GitHub Actions, and exits 1 when a test fails — the same runner and the
+      # same output as `make test` locally.
       - name: Run the tests
         if: inputs.test_assembly != ''
         run: |
           ./mill ${{ inputs.test_assembly }}
           jar="out/$(echo "${{ inputs.test_assembly }}" | tr '.' '/').dest/out.jar"
-          java -cp "$jar" ${{ inputs.test_main }}
+          fume run -c "$jar"
