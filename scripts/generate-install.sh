@@ -2,7 +2,7 @@
 #
 # Generates the install script for a release of an application published from propensive/<name>,
 # served from https://propensive.dev/<name>, embedding the release's per-platform digests. Run
-# by release-launcher.sh once every executable's digest is known.
+# by release.sh once every executable's digest is known.
 #
 # Usage: etc/shared generate-install.sh <name> X.Y.Z > install.sh
 
@@ -32,7 +32,7 @@ cat <<EOF
 # below, and installs it as \`$NAME\` in ~/.local/bin (or \$${UPPER}_INSTALL_DIR). POSIX shell
 # only; no stdin is read, so piping from curl is safe.
 #
-# Generated for $NAME $VERSION by release-launcher.sh; the digests are per-release.
+# Generated for $NAME $VERSION by release.sh; the digests are per-release.
 
 set -e
 

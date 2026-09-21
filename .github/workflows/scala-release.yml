@@ -1,0 +1,78 @@
+name: Scala Release
+
+# Reusable release workflow for Soundness-ecosystem repositories: publish the tagged version to
+# GitHub Releases. The caller triggers it on a pushed `X.Y.Z` tag; everything it does lives in
+# `scripts/release.sh` in this repository, run through `etc/shared` at the commit the caller pins
+# in `etc/github-ref`, and everything that varies between repositories is declared in the
+# caller's `etc/release`. There are therefore no per-repository inputs.
+#
+# Contract with the caller: a checked-in `./mill` bootstrap wrapper; `etc/shared` and
+# `etc/github-ref`; `etc/refs` and `etc/tools`; `etc/release`; an `object release` in build.mill
+# with a `stage` task; and the `SOUNDNESS_SCALA_RELEASE` pin in build.mill. The calling job must
+# grant `permissions: contents: write` — the organisation default is read-only, and a release
+# writes assets and the release itself, and on failure deletes the tag it was triggered by.
+
+on:
+  workflow_call:
+    inputs:
+      timeout:
+        description: Job timeout in minutes
+        type: number
+        default: 90
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      # The tag, and the whole history: release.sh needs the previous release tag to assemble the
+      # changelog, and Soundness's attestation gate recomputes the filtered tree of the commit.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      # Attestation notes live on a ref Actions does not fetch by default. Every repository but
+      # Soundness has nothing to fetch; `|| true` so that a missing ref reaches the gate in
+      # release.sh as a readable error rather than failing the checkout.
+      - name: Fetch CI attestation notes
+        run: git fetch origin 'refs/notes/ci-attestation:refs/notes/ci-attestation' || true
+
+      # The toolchain pin lives in the caller's build.mill, exactly as in scala-ci.yml.
+      - name: Read version pins
+        id: pins
+        run: |
+          echo "scala=$(sed -n 's/.*SOUNDNESS_SCALA_RELEASE", "\(.*\)").*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+
+      # The same three caches as scala-ci.yml, keyed the same way — and deliberately NOT `out/`.
+      # A release builds from a cold tree, which is what the `./mill clean` in every superseded
+      # release script was defending against: a warm `out/` can re-serve a `publishVersion`
+      # computed before the tag existed (this is how 0.64.0 shipped 0.63.0 plugin jars).
+      - name: Cache pinned libraries
+        uses: actions/cache@v5
+        with:
+          path: ~/.ivy2/local/dev.propensive
+          key: deps-${{ hashFiles('etc/refs') }}
+      - name: Cache proscala toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/soundness/proscala
+          key: proscala-${{ steps.pins.outputs.scala }}
+      - name: Cache coursier
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/coursier
+          key: coursier-${{ hashFiles('build.mill') }}
+          restore-keys: coursier-
+
+      # The tag name is the version; release.sh reads it from GITHUB_REF_NAME. The token lifts
+      # the API rate limit for deps.py and authenticates `gh` for everything else.
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./etc/shared release.sh

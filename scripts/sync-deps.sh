@@ -90,7 +90,7 @@ done < <("$PROPENSIVE_SHARED" deps.py walk "$FILE")
 # A tool (etc/tools; see deps.py) is a release by rule, and its jars are installed without
 # walking anything: what a plugin needs at run time its own POM names, and coursier follows
 # that. A release whose jars carry no descriptors (a command-only tool released before
-# release-launcher.sh staged self-describing jars) is skipped, not failed. A tool's command is
+# release.sh staged self-describing jars) is skipped, not failed. A tool's command is
 # installed by tools.sh, not here.
 TOOLS="$(dirname "$FILE")/tools"
 tools=0
