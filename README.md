@@ -19,7 +19,8 @@ repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at
 | `snapshot.sh <name> <base>` | publishes an unreleased build as a `snapshot-<hex>` pre-release, for others to pin |
 | `snapshot-prune.sh <name> [days]` | deletes old snapshot pre-releases |
 | `deps.py walk\|check` | the pin file's transitive closure; `check` is the gate every release runs |
-| `release-launcher.sh` | releases an application: its library jars, then its executables |
+| `release.sh` | publishes the tagged version: the gates, the jars, and (for an application) its executables |
+| `release_notes.py` | the release notes, assembled the same way for every repository |
 | `sync_releases.py`, `filtered_tree.py` | the helpers the above are built on |
 | `xeq-fetch.sh`, `generate-install.sh` | the `xeq` builder pin, and the installer script |
 
@@ -95,8 +96,8 @@ simply named in both files, by their respective consumers.
 2. In the downstream, paste the line into `etc/refs`. `make sync-deps` installs it (or,
    for a snapshot not yet on GitHub, builds it from the sibling checkout named by the commit);
    CI does the same on the PR, which can now merge.
-3. When the upstream is released, replace the pin with the release. `make release` refuses to
-   run while any pin, transitively, is a snapshot (`deps.py check`).
+3. When the upstream is released, replace the pin with the release. A release refuses to run
+   while any pin, transitively, is a snapshot (`deps.py check`).
 4. `make snapshot-prune` in the upstream, occasionally.
 
 The repository's own version stays a plain `val <name>Version = "X.Y.Z"` in `build.mill`;
@@ -133,5 +134,78 @@ naming the fume release that runs the suites in `test_assembly` (installed with 
 and the `SOUNDNESS_SCALA_RELEASE", "…"` toolchain pin in `build.mill`, which keys the
 toolchain cache. `test_main` is ignored: fume discovers the suites from the assembly.
 
-Releases run locally via each repository's `make release`; a `scala-release.yml` counterpart is
-deferred until Ziggurat owns the release pipeline (soundness#1958).
+## `scala-release.yml`, and releasing by tagging
+
+A release is cut by tagging, and nothing else:
+
+```sh
+git tag -s 1.2.3 && git push --tags
+```
+
+The tag fires the repository's `.github/workflows/release.yml`, fourteen lines which call
+`scala-release.yml` here; that checks out the tag, restores the same caches as `scala-ci.yml`
+(but never `out/` — a release builds from a cold tree) and runs `etc/shared release.sh`. The tag
+therefore exists *before* anything is built: it is the trigger, not the last step, which is the
+one substantive difference from the three scripts this replaced. The calling job must grant
+`permissions: contents: write`; the organisation default is read-only.
+
+`release.sh` gates first, and publishes nothing until every gate has passed:
+
+- the tag is **signed and verified** by GitHub, and names `HEAD`;
+- **CI is already green** on that commit — the release does not re-run the suite. Runs of the
+  release workflow itself are ignored, so a rolled-back attempt does not block the retry;
+- `val <name>Version` in `build.mill`, where the repository has one, equals the tag;
+- the migration notes, where the repository keeps them, are finalised for this version;
+- every `verify` command in `etc/release` passes;
+- `deps.py check`: every pin, transitively, is a published release.
+
+If anything fails after that, the release **and the tag** are deleted from origin, so the retry
+is `git tag -d 1.2.3 && git tag -s 1.2.3 && git push --tags` once the cause is fixed.
+`RELEASE_DRY_RUN=1` runs every gate, builds, stages and prints the notes without publishing.
+
+### What varies: `etc/release`
+
+One `key<TAB>value` line each (a run of spaces separates them just as well, so the file can be
+aligned), `#` for comments. An unknown key is an error — a mistyped `migration` would otherwise
+silently drop a gate.
+
+| key | what it says |
+|---|---|
+| `name` | the repository and application name; gives `propensive/<name>` and `<NAME>_RELEASE_VERSION` |
+| `title` | the release title prefix — `flair`, but `Soundness` |
+| `build` | mill targets run, in order, before `release.stage` |
+| `launcher` | the launcher module, when executables are published; absent for a library |
+| `hints` | the `--github` publication homes Burdock matches the classpath against |
+| `probes` | modules whose `publishVersion` must equal the tag before anything is published |
+| `migration` | the migration-notes directory, when the repository keeps them |
+| `verify` | an extra gate command; may be repeated, and each is run in order |
+
+The library list is *not* declared: it is read from the filenames `release.stage` produces. Nor
+is the version pin: `release.sh` looks for `val <name>Version` in `build.mill` itself.
+
+### Two publication orders, and why
+
+A **library** repository (Soundness, Pyrocosm) publishes a draft, uploads in batches of fifty,
+checks every asset's digest against the local file, and only then makes the release visible, so
+nothing partial is ever seen.
+
+An **application** repository (fume, flame, flair) cannot use a draft: its executables
+externalize each library by matching a SHA-256 against the release's *published* assets, and a
+draft's asset URLs live under an `untagged-…` path that changes on publication, which would bake
+dead URLs into them. So the release is made in two steps, exactly as it must be consumed — the
+library jars first, then, once GitHub has indexed their digests, the repackaged executables, the
+polyglot bootstrap and the installer. The script refuses to upload an executable that inlined a
+library instead of referring to the release.
+
+### The notes
+
+Every release's notes are assembled by `release_notes.py`, from: a lead paragraph; the
+repository's `doc/notes/<version>.md`, verbatim, if it has committed one (optional everywhere,
+with no gate); an install section, for an application; **Changes**, one entry per pull request
+merged since the previous release tag, taking the title, the summary paragraph and the
+user-facing notes from the pull request body — which is what `pull_request_template.md` has been
+asking every PR for all along; a **Migration** section, where the repository keeps migration
+notes; and an **Assets** section saying what is attached and how to pin it.
+
+The generator can be run by hand against an already-published version, which is the cheapest way
+to iterate on the format.

@@ -8,7 +8,7 @@ curl -fsSL https://propensive.dev/<tool> | sh
 
 and that URL is a single Firebase Hosting site that does nothing but redirect (302) each tool's
 path to `https://github.com/propensive/<tool>/releases/latest/download/install.sh`, the installer
-`release-launcher.sh` attaches to each release (`generate-install.sh` writes it). Nothing is
+`release.sh` attaches to each release (`generate-install.sh` writes it). Nothing is
 hosted; GitHub always serves the latest release. Everything else, including `/`, redirects to
 `https://propensive.com/`.
 
@@ -47,7 +47,7 @@ records — once `propensive.dev` itself is serving.
 
 No site, domain or DNS work is involved — that is the point of the path-based scheme.
 
-The repository must publish `install.sh` with each release, which `release-launcher.sh` does
+The repository must publish `install.sh` with each release, which `release.sh` does
 for any repository using it.
 
 ## Without the Firebase CLI

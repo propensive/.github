@@ -100,7 +100,7 @@ nothing pins it."
 
   # GitHub computes each asset's SHA-256 shortly after upload; wait for them all and confirm
   # each is the digest of the local file, since that is what a consumer will verify against.
-  # Through the REST API, as release-launcher.sh does: `gh release view --json assets` does
+  # Through the REST API, as release.sh does: `gh release view --json assets` does
   # not expose the digest.
   for jar in "${jars[@]}"; do
     name=$(basename "$jar")

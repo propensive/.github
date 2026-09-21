@@ -10,11 +10,19 @@ free of cycles). Rules for changing them:
    `etc/shared`. A merged change here reaches nobody until each repository bumps that pin, so
    a fix that consumers need must be followed by a one-line `etc/github-ref` bump in each.
    `scripts/shared` is the canonical copy of `etc/shared`; a change to it must be copied out.
-2. The workflow `.github/workflows/scala-ci.yml` is referenced `@main` and takes effect on
-   merge; keep it compatible with every consumer's current `etc/github-ref`.
+2. The workflows `.github/workflows/scala-ci.yml` and `.github/workflows/scala-release.yml` are
+   referenced `@main` and take effect on merge; keep them compatible with every consumer's
+   current `etc/github-ref`.
 3. Test a script change from a consumer checkout with
    `PROPENSIVE_GITHUB=/path/to/this/checkout make <target>` before opening the PR; every script
    is `bash -n`-clean and every Python file parses.
 4. Never make a script silently overwrite something outside `~/.ivy2/local`, `out/`, or a
    temporary directory; and never publish (`gh release …`) from anything but a clean checkout
    of a commit that is already on GitHub.
+5. `scripts/release.sh` publishes, and on failure deletes the tag it was triggered by, so a
+   change to it is tested with `RELEASE_DRY_RUN=1` from a consumer checkout before the PR:
+   `PROPENSIVE_GITHUB=/path/to/this/checkout RELEASE_DRY_RUN=1 ./etc/shared release.sh X.Y.Z`
+   runs every gate, builds, stages and prints the notes without publishing anything. Keep the
+   gates in the phase that runs *before* the rollback trap is armed: a gate that fails after it
+   deletes a tag that was never the problem. `scripts/release_notes.py` can be run by hand
+   against an already-published version.
