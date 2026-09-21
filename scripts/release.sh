@@ -321,15 +321,73 @@ fi
 # under an `untagged-…` path that changes when the draft is published, which would bake dead URLs
 # into the executables. So its release is made in two steps, exactly as it must be consumed.
 
-# Polls until GitHub has computed the asset's SHA-256 (it does so shortly after upload) and
-# returns it, or nothing after five minutes. `$1` is the release id, `$2` the asset name.
-asset_digest() {
-  local digest=""
+# Every asset's digest, as `<name> sha256:<hex>` lines, for the release id in `$1`.
+#
+# ONE paginated request for the whole list, not one per asset: Soundness attaches six hundred
+# jars, and polling each separately is six hundred requests returning the same payload — minutes
+# of latency, and enough write-adjacent traffic to trip the very secondary rate limit the uploads
+# just survived. The dedicated assets endpoint paginates properly; the release object's own
+# `assets` array does not.
+#
+# GitHub computes the digests asynchronously, so poll until none is blank, then let the caller
+# compare them all locally.
+release_digests() {
+  local out=""
   for _ in $(seq 1 60); do
-    digest=$(gh api "repos/$REPO/releases/$1" \
-      --jq ".assets[] | select(.name == \"$2\") | .digest // \"\"" 2>/dev/null || true)
-    [[ -n "$digest" ]] && { printf '%s' "$digest"; return 0; }
+    out=$(gh api "repos/$REPO/releases/$1/assets?per_page=100" --paginate \
+      --jq '.[] | .name + " " + (.digest // "")' 2>/dev/null || true)
+    if [[ -n "$out" ]] && ! grep -q ' $' <<< "$out"; then
+      printf '%s\n' "$out"
+      return 0
+    fi
     sleep 5
+  done
+  printf '%s\n' "$out"
+  return 1
+}
+
+# Checks every staged jar against the digest GitHub recorded for it. `$1` is the release id.
+verify_digests() {
+  local listing name local_digest got
+  listing=$(release_digests "$1") ||
+    fail "GitHub had not computed every asset digest within five minutes of upload"
+
+  declare -A remote=()
+  while read -r name got; do
+    [[ -n "$name" ]] && remote["$name"]=$got
+  done <<< "$listing"
+
+  for jar in "${jars[@]}"; do
+    name=$(basename "$jar")
+    local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
+    got=${remote[$name]:-}
+    [[ -n "$got" ]] || fail "the release has no asset named $name"
+    [[ "$got" == "sha256:$local_digest" ]] ||
+      fail "released digest '$got' for $name does not match local sha256:$local_digest"
+  done
+  note "every asset's digest matches ($count checked in one request)"
+}
+
+# Uploads one batch, retrying a transient failure rather than discarding the build.
+#
+# GitHub applies a SECONDARY rate limit to asset uploads, which six hundred jars reach in under a
+# minute — it is what stopped the first 0.68.0 release at jar 451 of 626, after a fifteen-minute
+# build. The limit is explicitly temporary ("wait a few minutes"), so the batch is retried with
+# growing backoff; `--clobber` makes a retry idempotent, so re-sending a batch that partly landed
+# is safe. Stderr is left attached, so the 403 is visible in the log.
+upload_batch() {
+  local attempt delay attempts=5
+  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+    if gh release upload "$VERSION" --repo "$REPO" --clobber "$@" >/dev/null; then
+      return 0
+    fi
+    if (( attempt == attempts )); then
+      note "upload attempt $attempt of $attempts failed; giving up"
+      return 1
+    fi
+    delay=$((60 * attempt))
+    note "upload attempt $attempt of $attempts failed; retrying in ${delay}s"
+    sleep "$delay"
   done
   return 1
 }
@@ -344,9 +402,12 @@ if [[ -z "$LAUNCHER" ]]; then
   # retried batch idempotent. Soundness attaches some six hundred jars.
   batch=50
   for (( start = 0; start < count; start += batch )); do
-    gh release upload "$VERSION" --repo "$REPO" --clobber "${jars[@]:start:batch}" >/dev/null ||
-      fail "uploading jars $((start + 1))-$(( start + batch > count ? count : start + batch )) failed"
+    upload_batch "${jars[@]:start:batch}" ||
+      fail "uploading jars $((start + 1))-$(( start + batch > count ? count : start + batch )) failed after five attempts"
     note "uploaded $(( start + batch > count ? count : start + batch ))/$count jars"
+    # Paced so the common case never reaches the secondary limit in the first place; the retry
+    # above is the safety net, not the plan. Skipped after the final batch.
+    (( start + batch < count )) && sleep 10
   done
 
   # By release id through the REST API: `gh release view --json assets` does not expose the
@@ -355,17 +416,9 @@ if [[ -z "$LAUNCHER" ]]; then
     --jq ".[] | select(.tag_name == \"$VERSION\" and .draft) | .id" | head -1)
   [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || fail "could not find the draft release $VERSION through the API"
 
-  for jar in "${jars[@]}"; do
-    name=$(basename "$jar")
-    local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
-    digest=$(asset_digest "$RELEASE_ID" "$name") ||
-      fail "GitHub reported no digest for $name within five minutes of its upload"
-    [[ "$digest" == "sha256:$local_digest" ]] ||
-      fail "released digest '$digest' for $name does not match local sha256:$local_digest"
-  done
-  note "every asset's digest matches"
+  verify_digests "$RELEASE_ID"
 
-  uploaded=$(gh api "repos/$REPO/releases/$RELEASE_ID" --jq '.assets | length')
+  uploaded=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets?per_page=100" --paginate --jq '.[].name' | wc -l | tr -d ' ')
   [[ "$uploaded" == "$count" ]] ||
     fail "the draft release has $uploaded assets but $count jars were staged"
 
@@ -387,15 +440,7 @@ else
   published="yes"
 
   RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$VERSION" --jq .id)
-  for jar in "${jars[@]}"; do
-    name=$(basename "$jar")
-    local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
-    digest=$(asset_digest "$RELEASE_ID" "$name") ||
-      fail "GitHub reported no digest for $name within five minutes of its upload"
-    [[ "$digest" == "sha256:$local_digest" ]] ||
-      fail "released digest '$digest' for $name does not match local sha256:$local_digest"
-    note "released $name ($digest)"
-  done
+  verify_digests "$RELEASE_ID"
 
   # Step 2: the launcher, repackaged against the now-published libraries. The `burdock.externalize`
   # macro embedded META-INF/burdock.deps at compile time; the repackager rewrites the JAR in place
