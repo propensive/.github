@@ -117,13 +117,24 @@ def release_by_tag(repo: str, tag: str) -> dict | None:
 
 
 def staged_assets(directory: Path) -> list[Asset]:
-    """The jars of a local `./mill release.stage`, named `<artifactId>-<version>.jar`."""
+    """The jars of a local `./mill release.stage`, named `<artifactId>-<version>.jar`.
+
+    The digest is computed here rather than left unknown. `install` treats an unknown digest as
+    proof that whatever already sits at the coordinate is current, so a staged sync used to be
+    inert whenever the ivy2 layout was already populated — and a release's own jars are exactly
+    the case where something else has usually populated it. CI publishes this repository's
+    modules with `publishLocal` and caches `~/.ivy2/local`; those jars carry the same coordinate
+    as the released ones but not the POM and ivy.xml that `release.stage` embeds, so they are
+    different bytes. Leaving them in place made the launcher compile against jars that are not
+    the ones being released, Burdock recorded their digests, and nothing matched a release asset
+    — flame 0.3.0 failed exactly there, and only the externalization guard caught it.
+    """
     assets: list[Asset] = []
     for jar in sorted(directory.glob("*.jar")):
         match = ASSET_NAME.match(jar.name)
         if match is None:
             fail(f"staged jar {jar.name} is not named <artifactId>-<version>.jar")
-        assets.append(Asset(match.group(1), match.group(2), str(jar), None))
+        assets.append(Asset(match.group(1), match.group(2), str(jar), sha256(jar)))
     return assets
 
 
