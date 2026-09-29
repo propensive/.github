@@ -161,7 +161,8 @@ one substantive difference from the three scripts this replaced. The calling job
 
 If anything fails after that, the release **and the tag** are deleted from origin, so the retry
 is `git tag -d 1.2.3 && git tag -s 1.2.3 && git push --tags` once the cause is fixed.
-`RELEASE_DRY_RUN=1` runs every gate, builds, stages and prints the notes without publishing.
+`RELEASE_DRY_RUN=1` runs every gate, builds, stages and prints the notes without publishing,
+and previews the pull requests the release would open in its consumers.
 
 ### What varies: `etc/release`
 
@@ -196,6 +197,43 @@ dead URLs into them. So the release is made in two steps, exactly as it must be 
 library jars first, then, once GitHub has indexed their digests, the repackaged executables, the
 polyglot bootstrap and the installer. The script refuses to upload an executable that inlined a
 library instead of referring to the release.
+
+### Proposing a release to its consumers: `etc/downstream`
+
+A repository that names its consumers in `etc/downstream` — one repository per line, `#` for
+comments — has each release proposed to them as a draft pull request, once it is published. The
+chain is declared where it starts, and only as far as the next link: xek names Soundness,
+Soundness names Pyrocosm, and Pyrocosm names fume, flame and flair.
+
+```
+# etc/downstream in Pyrocosm
+propensive/fume
+propensive/flame
+propensive/flair
+```
+
+`propagate.py` makes each pull request, on a branch `pins/<name>-<version>` of the consumer. It
+moves the released repository's pin in the consumer's `etc/refs` to the release, and every other
+pin the consumer shares with the release's own `etc/refs` to the version the release was built
+against; and it moves the consumer's `etc/xeq.tsv` to the release's. So a Pyrocosm release
+carries the Soundness and the xek it was built against to fume, flame and flair in one pull
+request each. A pin only moves forwards — a consumer already on something newer keeps it — and a
+consumer with nothing to change, or whose branch already exists, is left alone.
+
+The pull request is a draft because the new version may break the consumer, and the fixes belong
+on that branch: the pull request that fixes the breakage carries the bump. Its first paragraph is
+written for users, since it becomes part of the consumer's next release notes; the instructions
+to the maintainer are an HTML comment, which the notes drop.
+
+Writing to another repository needs a token the release job does not have: its own
+`GITHUB_TOKEN` is scoped to the repository being released. Store a fine-grained personal access
+token with **Contents** and **Pull requests** write access to the consumers as the repository
+secret `PROPAGATE_TOKEN` in each repository with an `etc/downstream`, and pass it through in
+`.github/workflows/release.yml` with `secrets: inherit`. Without it the release is published as
+before and the job says that nothing was proposed; a failure to propose never fails a release,
+since by then it is public. `RELEASE_DRY_RUN=1` prints the diff each pull request would make.
+xek's runner release runs the same script from the releasing machine, with `--xek` and the
+builder script's SHA-256, using whatever `gh` is authenticated as there.
 
 ### The notes
 
