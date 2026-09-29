@@ -31,7 +31,8 @@ Usage: etc/shared propagate.py [--dry-run] [--repo owner/name] [--title T] [--xe
   --repo       the released repository; defaults to $RELEASE_REPO_NAME, which release.sh exports
   --title      its display name; defaults to $RELEASE_TITLE, else the repository's name
   --xek        an xek runner release, with the SHA-256 of its builder script: consumers' etc/xeq.tsv
-               is what moves, not their etc/refs
+               is what moves, not their etc/refs. Implied when $RELEASE_ASSETS, the directory of
+               an assembled release's files (which release.sh exports), holds the script `xek`
   --dry-run    print what each pull request would change, and write nothing
 
 Credentials: `gh`, with contents and pull-requests write access to every consumer. A release job's
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -266,6 +268,9 @@ def main(arguments: list[str]) -> int:
         return 2
     version = positional[0]
     released = repository(repo)
+    builder = Path(os.environ.get("RELEASE_ASSETS", "")) / "xek"
+    if not xek_sha and os.environ.get("RELEASE_ASSETS") and builder.is_file():
+        xek_sha = hashlib.sha256(builder.read_bytes()).hexdigest()
     name = released.split("/", 1)[1]
     title = title or name
     xek = bool(xek_sha)

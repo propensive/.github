@@ -24,6 +24,11 @@
 #   probes     modules whose `publishVersion` must equal the tag before anything is published
 #   migration  the migration-notes directory, when the repository keeps them
 #   verify     an extra gate command; may be repeated, and each is run in order
+#   tag        the tag prefix, for a repository whose tags are not bare versions (`xek-`), then
+#              any earlier prefixes whose tags also count as releases, for the notes (`xeq-`)
+#   assemble   a command writing this release's assets into $RELEASE_ASSETS, for a repository
+#              whose release is not a set of Mill-staged jars; it replaces the build and staging
+#   after      a command run once the release is public, which cannot fail it; may be repeated
 #
 # Two things are deliberately NOT declared, because they can be derived: the library list (the
 # filenames `release.stage` produces) and the version pin (`val <name>Version` in build.mill).
@@ -65,7 +70,7 @@ config() {
 
 # A typo in a key would otherwise be silently ignored — and a mistyped `migration` or `probes`
 # silently drops a gate, which is exactly the kind of failure a release must not have.
-KNOWN=" name title build launcher hints probes migration verify "
+KNOWN=" name title build launcher hints probes migration verify tag assemble after "
 while read -r key _; do
   [[ -z "$key" || "$key" == \#* ]] && continue
   [[ "$KNOWN" == *" $key "* ]] || fail "$CONFIG: unknown key '$key'"
@@ -81,9 +86,26 @@ MIGRATION=$(config migration)
 UPPER=$(printf '%s' "$NAME" | tr '[:lower:]-' '[:upper:]_')
 REPO=${RELEASE_REPO:-propensive/$NAME}
 
-VERSION=${1:-${GITHUB_REF_NAME:-}}
-[[ -n "$VERSION" ]] || fail "no version given and GITHUB_REF_NAME is unset"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "'$VERSION' is not of the form X.Y.Z"
+ASSEMBLE=$(config assemble)
+[[ -z "$ASSEMBLE" || -z "$LAUNCHER" ]] || fail "$CONFIG: 'assemble' and 'launcher' cannot both be set"
+
+# The tag is the version, unless the repository's tags carry a prefix: xek's are `xek-0.10`. Either
+# may be given as the argument; in the workflow the tag arrives as GITHUB_REF_NAME, and must carry
+# the prefix. Everything that names the tag or the release uses $TAG, and $VERSION is the version.
+PREFIXES=$(config tag)
+PREFIX=${PREFIXES%% *}
+REF=${1:-${GITHUB_REF_NAME:-}}
+[[ -n "$REF" ]] || fail "no version given and GITHUB_REF_NAME is unset"
+if [[ -z "${1:-}" && -n "$PREFIX" && "$REF" != "$PREFIX"* ]]; then
+  fail "the tag '$REF' does not start with '$PREFIX'"
+fi
+VERSION=${REF#"$PREFIX"}
+TAG="$PREFIX$VERSION"
+if [[ -n "$ASSEMBLE" ]]; then
+  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || fail "'$VERSION' is not of the form X.Y or X.Y.Z"
+else
+  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "'$VERSION' is not of the form X.Y.Z"
+fi
 
 note "$TITLE $VERSION from $REPO$([[ "$DRY_RUN" == 1 ]] && echo ' (dry run)')"
 
@@ -109,14 +131,14 @@ HEAD_SHA=$(git rev-parse HEAD)
 # there the tag gates are reported as skipped rather than failing.
 # On a 404 `gh api` writes the error body to stdout and exits non-zero, so the absence of the tag
 # is read from the status, never from the output being empty.
-if ! REMOTE_TAG=$(gh api "repos/$REPO/git/ref/tags/$VERSION" \
+if ! REMOTE_TAG=$(gh api "repos/$REPO/git/ref/tags/$TAG" \
      --jq '.object.sha + " " + .object.type' 2>/dev/null); then
   REMOTE_TAG=""
 fi
 
 if [[ -z "$REMOTE_TAG" ]]; then
-  [[ "$DRY_RUN" == 1 ]] || fail "$REPO has no tag $VERSION; push it with \`git push --tags\`"
-  note "dry run: $REPO has no tag $VERSION yet, so the tag gates are skipped"
+  [[ "$DRY_RUN" == 1 ]] || fail "$REPO has no tag $TAG; push it with \`git push --tags\`"
+  note "dry run: $REPO has no tag $TAG yet, so the tag gates are skipped"
 else
   TAG_OBJECT=${REMOTE_TAG%% *}
   TAG_TYPE=${REMOTE_TAG##* }
@@ -132,17 +154,17 @@ else
   fi
 
   [[ "$TAGGED_SHA" == "$HEAD_SHA" ]] ||
-    fail "tag $VERSION names ${TAGGED_SHA:0:12}, but this is ${HEAD_SHA:0:12}"
+    fail "tag $TAG names ${TAGGED_SHA:0:12}, but this is ${HEAD_SHA:0:12}"
 
   if [[ "$VERIFIED" != "true" ]]; then
-    echo "release: tag $VERSION is not a verified signed tag." >&2
-    echo "  Tag with \`git tag -s $VERSION\` — a lightweight tag carries no signature — and make" >&2
+    echo "release: tag $TAG is not a verified signed tag." >&2
+    echo "  Tag with \`git tag -s $TAG\` — a lightweight tag carries no signature — and make" >&2
     echo "  sure the signing key is uploaded to the GitHub account that owns it. Soundness signs" >&2
     echo "  its tags with a PGP key, which is separate from its SSH attestation key; GitHub" >&2
     echo "  verifies only keys it has been given." >&2
     exit 1
   fi
-  note "tag $VERSION is signed and verified, at ${HEAD_SHA:0:12}"
+  note "tag $TAG is signed and verified, at ${HEAD_SHA:0:12}"
 fi
 
 # The gate is a CI run that has already passed on this exact commit — the release does not re-run
@@ -168,16 +190,18 @@ done <<< "$RUNS"
 (( successes > 0 )) || fail "no CI run on ${HEAD_SHA:0:12} succeeded"
 note "CI is green on ${HEAD_SHA:0:12} ($successes successful run(s))"
 
-if gh release view "$VERSION" --repo "$REPO" >/dev/null 2>&1; then
-  [[ "$DRY_RUN" == 1 ]] || fail "$REPO already has a release $VERSION"
-  note "dry run: $REPO already has a release $VERSION; nothing here will touch it"
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  [[ "$DRY_RUN" == 1 ]] || fail "$REPO already has a release $TAG"
+  note "dry run: $REPO already has a release $TAG; nothing here will touch it"
 fi
 
 # The version the build compiles into its POMs — and, in a launcher repository, the fixed
 # coordinate at which the launcher resolves its own libraries — must be the version being
 # released. Soundness has no such `val` (its publishVersion comes from the tag), so an empty
 # result means the check does not apply rather than that it failed.
-PINNED=$(sed -n "s/.*val ${NAME}Version = \"\\(.*\\)\".*/\\1/p" build.mill)
+# An assembled release is versioned by its tag alone: a `val` in its build.mill, if it has one,
+# versions something else (xek's is its Scala packager's).
+PINNED=$([[ -n "$ASSEMBLE" ]] || sed -n "s/.*val ${NAME}Version = \"\\(.*\\)\".*/\\1/p" build.mill)
 if [[ -n "$PINNED" && "$PINNED" != "$VERSION" ]]; then
   fail "build.mill pins ${NAME}Version=$PINNED, not $VERSION; bump it, merge, and re-tag"
 fi
@@ -204,7 +228,7 @@ done < <(config verify)
 # build compiles against the released jars and not against an earlier snapshot under the same
 # version.
 "$PROPENSIVE_SHARED" deps.py check
-"$PROPENSIVE_SHARED" sync-deps.sh
+[[ -n "$ASSEMBLE" ]] || "$PROPENSIVE_SHARED" sync-deps.sh
 
 # The `xeq` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
@@ -227,20 +251,20 @@ rollback() {
   local left=""
 
   if [[ -n "$published" ]]; then
-    if gh release delete "$VERSION" --repo "$REPO" --yes >/dev/null 2>&1; then
-      echo "release: deleted the release $VERSION" >&2
+    if gh release delete "$TAG" --repo "$REPO" --yes >/dev/null 2>&1; then
+      echo "release: deleted the release $TAG" >&2
     else
       left="the release"
-      echo "release: COULD NOT delete the release $VERSION; delete it by hand" >&2
+      echo "release: COULD NOT delete the release $TAG; delete it by hand" >&2
     fi
   fi
 
-  if gh api -X DELETE "repos/$REPO/git/refs/tags/$VERSION" >/dev/null 2>&1; then
-    echo "release: deleted the tag $VERSION from $REPO" >&2
+  if gh api -X DELETE "repos/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1; then
+    echo "release: deleted the tag $TAG from $REPO" >&2
   else
     left="${left:+$left and }the tag"
-    echo "release: COULD NOT delete the tag $VERSION; delete it with" >&2
-    echo "  git push --delete origin $VERSION" >&2
+    echo "release: COULD NOT delete the tag $TAG; delete it with" >&2
+    echo "  git push --delete origin $TAG" >&2
   fi
 
   if [[ -n "$left" ]]; then
@@ -248,7 +272,7 @@ rollback() {
   else
     echo "release: rolled back; nothing is published and the tag is gone from origin." >&2
   fi
-  echo "release: fix, then: git tag -d $VERSION && git tag -s $VERSION && git push --tags" >&2
+  echo "release: fix, then: git tag -d $TAG && git tag -s $TAG && git push --tags" >&2
 }
 
 trap rollback EXIT
@@ -259,50 +283,72 @@ trap rollback EXIT
 # running Mill daemon sees this export) in every repository's build.mill.
 export "${UPPER}_RELEASE_VERSION=$VERSION"
 
-while read -r targets; do
-  [[ -z "$targets" ]] && continue
-  for target in $targets; do
-    note "building $target"
-    ./mill "$target" || fail "building $target failed"
+if [[ -n "$ASSEMBLE" ]]; then
+
+  # A release that is not a set of jars — xek's runner stubs and builder script — is assembled by
+  # the repository's own command, into a directory holding exactly the files to attach. The gates
+  # before it and the upload, digest check, notes and rollback after it are a library's; `jars`
+  # below is those files, the name every other repository's assets have earned.
+  ASSETS_DIR=$(mktemp -d)
+  export RELEASE_VERSION="$VERSION" RELEASE_TAG="$TAG" RELEASE_ASSETS="$ASSETS_DIR" \
+         RELEASE_REPO_NAME="$REPO"
+  note "assembling: $ASSEMBLE"
+  eval "$ASSEMBLE" || fail "assembling the release failed"
+  mapfile -t jars < <(find "$ASSETS_DIR" -maxdepth 1 -type f | sort)
+  count=${#jars[@]}
+  (( count > 0 )) || fail "\`$ASSEMBLE\` wrote nothing into \$RELEASE_ASSETS"
+  LIBRARIES=""
+  note "assembled $count assets for $TAG"
+
+else
+
+  while read -r targets; do
+    [[ -z "$targets" ]] && continue
+    for target in $targets; do
+      note "building $target"
+      ./mill "$target" || fail "building $target failed"
+    done
+  done < <(config build)
+
+  # Every released module must resolve to exactly this version before anything leaves the machine.
+  # The env var makes all modules resolve identically, so a handful of probes suffice.
+  while read -r modules; do
+    [[ -z "$modules" ]] && continue
+    for module in $modules; do
+      resolved=$(./mill show "$module.publishVersion" | tr -d '"')
+      [[ "$resolved" == "$VERSION" ]] ||
+        fail "$module.publishVersion=$resolved, expected $VERSION"
+    done
+  done < <(config probes)
+
+  # `release.stage` builds every released jar into one directory under its release asset name, with
+  # its POM and ivy.xml embedded under META-INF/maven/ — the jar alone is then enough for a
+  # consumer's sync-deps.sh to rebuild a resolvable local repository.
+  ./mill release.stage || fail "staging the release jars failed"
+
+  STAGE_DIR="out/release/stage.dest"
+  mapfile -t jars < <(find "$STAGE_DIR" -maxdepth 1 -name '*.jar' | sort)
+  count=${#jars[@]}
+  (( count > 0 )) || fail "release.stage produced no jars"
+
+  LIBRARIES=""
+  for jar in "${jars[@]}"; do
+    base=$(basename "$jar")
+    [[ "$base" == *"-$VERSION.jar" ]] || fail "staged jar $base does not carry version $VERSION"
+    LIBRARIES="$LIBRARIES ${base%-"$VERSION".jar}"
   done
-done < <(config build)
+  LIBRARIES=${LIBRARIES# }
+  note "staged $count jars for $VERSION"
 
-# Every released module must resolve to exactly this version before anything leaves the machine.
-# The env var makes all modules resolve identically, so a handful of probes suffice.
-while read -r modules; do
-  [[ -z "$modules" ]] && continue
-  for module in $modules; do
-    resolved=$(./mill show "$module.publishVersion" | tr -d '"')
-    [[ "$resolved" == "$VERSION" ]] ||
-      fail "$module.publishVersion=$resolved, expected $VERSION"
-  done
-done < <(config probes)
+  # Installed over whatever publishLocal left, so that a launcher's compile classpath holds exactly
+  # the bytes being released — which is what Burdock hashes and matches against the release assets.
+  "$PROPENSIVE_SHARED" sync_releases.py --staged "$STAGE_DIR"
 
-# `release.stage` builds every released jar into one directory under its release asset name, with
-# its POM and ivy.xml embedded under META-INF/maven/ — the jar alone is then enough for a
-# consumer's sync-deps.sh to rebuild a resolvable local repository.
-./mill release.stage || fail "staging the release jars failed"
-
-STAGE_DIR="out/release/stage.dest"
-mapfile -t jars < <(find "$STAGE_DIR" -maxdepth 1 -name '*.jar' | sort)
-count=${#jars[@]}
-(( count > 0 )) || fail "release.stage produced no jars"
-
-LIBRARIES=""
-for jar in "${jars[@]}"; do
-  base=$(basename "$jar")
-  [[ "$base" == *"-$VERSION.jar" ]] || fail "staged jar $base does not carry version $VERSION"
-  LIBRARIES="$LIBRARIES ${base%-"$VERSION".jar}"
-done
-LIBRARIES=${LIBRARIES# }
-note "staged $count jars for $VERSION"
-
-# Installed over whatever publishLocal left, so that a launcher's compile classpath holds exactly
-# the bytes being released — which is what Burdock hashes and matches against the release assets.
-"$PROPENSIVE_SHARED" sync_releases.py --staged "$STAGE_DIR"
+fi
 
 export RELEASE_NAME="$NAME" RELEASE_TITLE="$TITLE" RELEASE_REPO_NAME="$REPO" \
-       RELEASE_LIBRARIES="$LIBRARIES" RELEASE_LAUNCHER="$LAUNCHER" RELEASE_MIGRATION="$MIGRATION"
+       RELEASE_LIBRARIES="$LIBRARIES" RELEASE_LAUNCHER="$LAUNCHER" RELEASE_MIGRATION="$MIGRATION" \
+       RELEASE_TAG="$TAG" RELEASE_TAG_PREFIXES="$PREFIXES" RELEASE_ASSETS="${ASSETS_DIR:-}"
 
 if [[ "$DRY_RUN" == 1 ]]; then
   note "dry run: nothing will be published. The notes would be:"
@@ -312,7 +358,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   # What the release would propose to its consumers, read from GitHub but written nowhere.
   "$PROPENSIVE_SHARED" propagate.py --dry-run "$VERSION" ||
     note "dry run: previewing the pull requests to consumers failed"
-  note "dry run complete: $count jars staged ($LIBRARIES)"
+  note "dry run complete: $([[ -n "$ASSEMBLE" ]] && echo "$count assets assembled" || echo "$count jars staged ($LIBRARIES)")"
   trap - EXIT
   exit 0
 fi
@@ -383,7 +429,7 @@ verify_digests() {
 upload_batch() {
   local attempt delay attempts=5
   for (( attempt = 1; attempt <= attempts; attempt++ )); do
-    if gh release upload "$VERSION" --repo "$REPO" --clobber "$@" >/dev/null; then
+    if gh release upload "$TAG" --repo "$REPO" --clobber "$@" >/dev/null; then
       return 0
     fi
     if (( attempt == attempts )); then
@@ -399,7 +445,7 @@ upload_batch() {
 
 if [[ -z "$LAUNCHER" ]]; then
 
-  gh release create "$VERSION" --repo "$REPO" --draft --title "$TITLE $VERSION" \
+  gh release create "$TAG" --repo "$REPO" --draft --title "$TITLE $VERSION" \
     --notes "Publishing…" >/dev/null || fail "could not create the draft release"
   published="draft"
 
@@ -418,8 +464,8 @@ if [[ -z "$LAUNCHER" ]]; then
   # By release id through the REST API: `gh release view --json assets` does not expose the
   # digest, and `releases/tags/<tag>` serves only published releases — this one is still a draft.
   RELEASE_ID=$(gh api "repos/$REPO/releases?per_page=100" \
-    --jq ".[] | select(.tag_name == \"$VERSION\" and .draft) | .id" | head -1)
-  [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || fail "could not find the draft release $VERSION through the API"
+    --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" | head -1)
+  [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || fail "could not find the draft release $TAG through the API"
 
   verify_digests "$RELEASE_ID"
 
@@ -430,9 +476,9 @@ if [[ -z "$LAUNCHER" ]]; then
   NOTES=$(mktemp)
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION" > "$NOTES" || fail "generating the notes failed"
   [[ -s "$NOTES" ]] || fail "the generated notes are empty"
-  gh release edit "$VERSION" --repo "$REPO" --notes-file "$NOTES" >/dev/null ||
+  gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES" >/dev/null ||
     fail "could not write the release notes"
-  gh release edit "$VERSION" --repo "$REPO" --draft=false >/dev/null ||
+  gh release edit "$TAG" --repo "$REPO" --draft=false >/dev/null ||
     fail "could not publish the draft"
 
 else
@@ -440,11 +486,11 @@ else
   # Step 1: the release, with the library jars alone — the exact bytes the local publish put on
   # the launcher's compile classpath, so the digests GitHub records are the hashes Burdock
   # computed at compile time.
-  gh release create "$VERSION" --repo "$REPO" --title "$TITLE $VERSION" \
+  gh release create "$TAG" --repo "$REPO" --title "$TITLE $VERSION" \
     --notes "Publishing…" "${jars[@]}" >/dev/null || fail "could not create the release"
   published="yes"
 
-  RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$VERSION" --jq .id)
+  RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
   verify_digests "$RELEASE_ID"
 
   # Step 2: the launcher, repackaged against the now-published libraries. The `burdock.externalize`
@@ -463,7 +509,7 @@ else
   # The whole point of the two-step ordering: refuse to ship an executable that quietly inlined a
   # library instead of referring to the release.
   for lib in $LIBRARIES; do
-    grep -q "propensive/$NAME/releases/download/$VERSION/$lib-$VERSION.jar" \
+    grep -q "propensive/$NAME/releases/download/$TAG/$lib-$VERSION.jar" \
       "/tmp/$NAME-repackage.log" ||
       fail "$lib did not externalize against this release; not uploading the executables"
   done
@@ -477,7 +523,7 @@ else
     dist/xeq build --jar "$NAME.jar" --out "$DIST/$NAME-$platform$ext" --target "$platform" ||
       fail "building the $platform executable failed"
   done
-  gh release upload "$VERSION" --repo "$REPO" "$DIST"/"$NAME"-* >/dev/null ||
+  gh release upload "$TAG" --repo "$REPO" "$DIST"/"$NAME"-* >/dev/null ||
     fail "uploading the executables failed"
 
   # The `<name>` polyglot bootstrap: a small any-shell script embedding each executable's URL and
@@ -493,26 +539,34 @@ else
   done
   sed -i.bak "s/^$NAME-//; s/\\.exe\t/\t/" "$MANIFEST"
   dist/xeq dispatch --out "$DIST/$NAME" --manifest "$MANIFEST" || fail "building the dispatcher failed"
-  gh release upload "$VERSION" --repo "$REPO" "$DIST/$NAME" >/dev/null ||
+  gh release upload "$TAG" --repo "$REPO" "$DIST/$NAME" >/dev/null ||
     fail "uploading the dispatcher failed"
 
   # The installer served from https://propensive.dev/<name>, which redirects to this asset;
   # it embeds this release's per-platform digests, so it is generated once they are all known.
   "$PROPENSIVE_SHARED" generate-install.sh "$NAME" "$VERSION" > "$DIST/install.sh" ||
     fail "generating install.sh failed"
-  gh release upload "$VERSION" --repo "$REPO" "$DIST/install.sh" >/dev/null ||
+  gh release upload "$TAG" --repo "$REPO" "$DIST/install.sh" >/dev/null ||
     fail "uploading install.sh failed"
 
   NOTES=$(mktemp)
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION" > "$NOTES" || fail "generating the notes failed"
   [[ -s "$NOTES" ]] || fail "the generated notes are empty"
-  gh release edit "$VERSION" --repo "$REPO" --notes-file "$NOTES" >/dev/null ||
+  gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES" >/dev/null ||
     fail "could not write the release notes"
 
 fi
 
 trap - EXIT
-note "$VERSION published to https://github.com/$REPO/releases/tag/$VERSION ($count jars)"
+note "$TAG published to https://github.com/$REPO/releases/tag/$TAG ($count assets)"
+
+# Whatever the repository does once its release is public — xek records the hashes it published in
+# a pull request of its own. Like what follows, it cannot fail a release that already exists.
+while read -r command; do
+  [[ -z "$command" ]] && continue
+  note "after: $command"
+  eval "$command" || note "\`$command\` failed; the release is published, so finish that by hand"
+done < <(config after)
 
 # Propose the release to the repositories that consume it, one draft pull request each. This runs
 # after the rollback trap is disarmed and never fails the job: the release is already public, and
