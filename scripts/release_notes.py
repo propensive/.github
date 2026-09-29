@@ -26,7 +26,10 @@ Sections, each omitted when it would be empty:
 
 Environment: RELEASE_NAME, RELEASE_TITLE, RELEASE_REPO_NAME, RELEASE_LIBRARIES (space-separated),
 RELEASE_LAUNCHER (non-empty when executables are published), RELEASE_MIGRATION (the notes
-directory, or empty); GITHUB_TOKEN lifts the API rate limit.
+directory, or empty); RELEASE_TAG_PREFIXES, for a repository whose tags are not bare versions
+(`xek- xeq-`: the first prefixes this release's tag, and a tag under any of them is an earlier
+release); RELEASE_ASSETS, the directory of an assembled release's files, which the lead and the
+Assets section then describe in place of jars; GITHUB_TOKEN lifts the API rate limit.
 """
 
 from __future__ import annotations
@@ -63,6 +66,9 @@ REPO = os.environ.get("RELEASE_REPO_NAME", f"propensive/{NAME}")
 LIBRARIES = os.environ.get("RELEASE_LIBRARIES", "").split()
 LAUNCHER = os.environ.get("RELEASE_LAUNCHER", "")
 MIGRATION = os.environ.get("RELEASE_MIGRATION", "")
+PREFIXES = os.environ.get("RELEASE_TAG_PREFIXES", "").split()
+ASSETS = sorted(path.name for path in Path(os.environ["RELEASE_ASSETS"]).iterdir()
+                if path.is_file()) if os.environ.get("RELEASE_ASSETS") else []
 
 
 def git(*arguments: str) -> str:
@@ -126,9 +132,14 @@ def listed(items: list[str]) -> str:
     return ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
+def tag(version: str) -> str:
+    return (PREFIXES[0] if PREFIXES else "") + version
+
+
 def previous_tag(version: str) -> str:
-    return git("describe", "--tags", "--abbrev=0", "--match", "[0-9]*.[0-9]*.[0-9]*",
-               f"{version}^")
+    patterns = [f"{prefix}[0-9]*" for prefix in PREFIXES] or ["[0-9]*.[0-9]*.[0-9]*"]
+    matches = [argument for pattern in patterns for argument in ("--match", pattern)]
+    return git("describe", "--tags", "--abbrev=0", *matches, f"{tag(version)}^")
 
 
 def pull_requests(version: str) -> list[dict]:
@@ -138,7 +149,7 @@ def pull_requests(version: str) -> list[dict]:
     subject alone, so that nothing in the range goes unreported.
     """
     previous = previous_tag(version)
-    span = f"{previous}..{version}" if previous else version
+    span = f"{previous}..{tag(version)}" if previous else tag(version)
     subjects = git("log", "--format=%s", span).splitlines()
 
     entries: list[dict] = []
@@ -273,7 +284,17 @@ def modules() -> tuple[list[str], int]:
     return plain, len(LIBRARIES) - len(plain)
 
 
+def assembled() -> str:
+    sums = [name for name in ASSETS if name.endswith("SHA256SUMS")]
+    text = f"## Assets\n\nAttached: {listed(ASSETS)}."
+    if sums:
+        text += f" `{sums[0]}` lists the SHA-256 of every other asset."
+    return text + "\n"
+
+
 def assets(version: str) -> str:
+    if ASSETS and not LIBRARIES:
+        return assembled()
     plain, crossed = modules()
     if len(plain) == 1:
         attached = f"`{plain[0]}`, attached as `{plain[0]}-{version}.jar`"
@@ -313,6 +334,8 @@ run.
 
 
 def lead(version: str) -> str:
+    if ASSETS and not LIBRARIES:
+        return f"{TITLE} {version}."
     plain, crossed = modules()
     if 0 < len(plain) <= 4:
         carried = f"{listed(plain)}"
