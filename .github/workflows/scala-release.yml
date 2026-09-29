@@ -10,7 +10,8 @@ name: Scala Release
 # `etc/github-ref`; `etc/refs` and `etc/tools`; `etc/release`; an `object release` in build.mill
 # with a `stage` task; and the `SOUNDNESS_SCALA_RELEASE` pin in build.mill. The calling job must
 # grant `permissions: contents: write` — the organisation default is read-only, and a release
-# writes assets and the release itself, and on failure deletes the tag it was triggered by.
+# writes assets and the release itself, and on failure deletes the tag it was triggered by. A
+# caller with an `etc/downstream` also passes `secrets: inherit`, for PROPAGATE_TOKEN below.
 
 on:
   workflow_call:
@@ -19,6 +20,14 @@ on:
         description: Job timeout in minutes
         type: number
         default: 90
+    # Optional. A token with contents and pull-requests write access to the repositories named in
+    # the caller's `etc/downstream`, to which the published release is proposed as draft pull
+    # requests (scripts/propagate.py); the job's own token reaches no other repository. A caller
+    # passes it with `secrets: inherit`; without it, the release is published and nothing is
+    # proposed.
+    secrets:
+      PROPAGATE_TOKEN:
+        required: false
 
 jobs:
   release:
@@ -75,4 +84,5 @@ jobs:
       - name: Publish the release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PROPAGATE_TOKEN: ${{ secrets.PROPAGATE_TOKEN }}
         run: ./etc/shared release.sh

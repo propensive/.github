@@ -30,7 +30,9 @@
 #
 # Environment: GITHUB_TOKEN authenticates `gh` and lifts the API rate limit; RELEASE_REPO
 # overrides `propensive/<name>`; RELEASE_DRY_RUN=1 runs every gate, builds, stages and prints the
-# notes without publishing, deleting or uploading anything.
+# notes without publishing, deleting or uploading anything; PROPAGATE_TOKEN, a token with write
+# access to the repositories named in `etc/downstream`, lets the published release be proposed to
+# them (see propagate.py) — without it, nothing is proposed and the release is unaffected.
 #
 # Requires: `gh`, authenticated with contents write access to the repository.
 
@@ -307,6 +309,9 @@ if [[ "$DRY_RUN" == 1 ]]; then
   echo
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION"
   echo
+  # What the release would propose to its consumers, read from GitHub but written nowhere.
+  "$PROPENSIVE_SHARED" propagate.py --dry-run "$VERSION" ||
+    note "dry run: previewing the pull requests to consumers failed"
   note "dry run complete: $count jars staged ($LIBRARIES)"
   trap - EXIT
   exit 0
@@ -508,3 +513,9 @@ fi
 
 trap - EXIT
 note "$VERSION published to https://github.com/$REPO/releases/tag/$VERSION ($count jars)"
+
+# Propose the release to the repositories that consume it, one draft pull request each. This runs
+# after the rollback trap is disarmed and never fails the job: the release is already public, and
+# a consumer that could not be reached is a pull request to open by hand, not a release to undo.
+"$PROPENSIVE_SHARED" propagate.py "$VERSION" ||
+  note "proposing $VERSION to its consumers failed; open those pull requests by hand"
