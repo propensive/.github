@@ -180,9 +180,33 @@ silently drop a gate.
 | `probes` | modules whose `publishVersion` must equal the tag before anything is published |
 | `migration` | the migration-notes directory, when the repository keeps them |
 | `verify` | an extra gate command; may be repeated, and each is run in order |
+| `tag` | the tag prefix, for a repository whose tags are not bare versions (`xek-`), then any earlier prefixes whose tags are releases too (`xeq-`) |
+| `assemble` | a command writing the release's assets into `$RELEASE_ASSETS`, in place of the Mill build and `release.stage` |
+| `after` | a command run once the release is public, which cannot fail it; may be repeated |
 
 The library list is *not* declared: it is read from the filenames `release.stage` produces. Nor
 is the version pin: `release.sh` looks for `val <name>Version` in `build.mill` itself.
+
+### A release that is not jars: `assemble`
+
+xek releases native runner stubs and a shell script, not jars, but it is released the same way,
+by pushing a signed tag, through the same script. Its `etc/release` names a command that builds
+the assets into the directory `$RELEASE_ASSETS`, and everything around it is a library's release:
+the gates before it; the draft, the batched upload and the digest check after it; the notes; and
+the rollback of the release and the tag on any failure. Its tags carry a prefix, `xek-0.10`, so
+`tag` declares it (the version may then be `X.Y`), and `after` records the published hashes in a
+pull request of its own once the release is public. The workflow that runs it is xek's own,
+because the stubs are cross-compiled on macOS rather than by Mill on Linux:
+
+```
+name       xek
+tag        xek- xeq-
+assemble   ./etc/ci/runners-assemble.sh
+after      ./etc/ci/runners-record.sh
+```
+
+An assembled release skips the gates that concern jars: the `val <name>Version` check (xek's
+versions its Scala packager, not the stubs) and `sync-deps.sh`. `deps.py check` still runs.
 
 ### Two publication orders, and why
 
