@@ -47,8 +47,10 @@ records — once `propensive.dev` itself is serving.
 
 No site, domain or DNS work is involved — that is the point of the path-based scheme.
 
-The repository must publish `install.sh` with each release, which `release.sh` does
-for any repository using it.
+The repository must publish `install.sh` with each release. `release.sh` does that for any
+repository with a `launcher`; a repository whose release is assembled by its own command (xek's)
+writes it into its assets there, with `generate-install.sh <name> X.Y.Z <tag> <assets>`, and
+`release.sh` uploads it and checks its digest like any other asset.
 
 ## Without the Firebase CLI
 

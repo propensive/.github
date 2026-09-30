@@ -1,22 +1,48 @@
 #!/bin/sh
 #
 # Generates the install script for a release of an application published from propensive/<name>,
-# served from https://propensive.dev/<name>, embedding the release's per-platform digests. Run
-# by release.sh once every executable's digest is known.
+# served from https://propensive.dev/<name>, embedding the release's per-platform digests of the
+# executables `<name>-<platform>`. Run by release.sh once every executable's digest is known, and
+# by a repository's own `assemble` step (xek's) before its release exists.
 #
-# Usage: etc/shared generate-install.sh <name> X.Y.Z > install.sh
+# Usage: etc/shared generate-install.sh <name> X.Y.Z [tag [assets]] > install.sh
+#
+# The tag defaults to the version, and names the release the executables are downloaded from.
+# The digests are GitHub's, for the published release, unless `assets` names a directory holding
+# the executables themselves, when they are computed from its files: which is safe, because
+# release.sh checks every asset it uploads against the digest GitHub then records.
 
 set -e
 
-if [ $# -ne 2 ]; then
-  echo "Usage: $0 <name> X.Y.Z" >&2; exit 1
+if [ $# -lt 2 ] || [ $# -gt 4 ]; then
+  echo "Usage: $0 <name> X.Y.Z [tag [assets]]" >&2; exit 1
 fi
 
 NAME=$1
 VERSION=$2
+TAG=${3:-$VERSION}
+ASSETS=${4:-}
 UPPER=$(printf '%s' "$NAME" | tr '[:lower:]-' '[:upper:]_')
-BASE="https://github.com/propensive/$NAME/releases/download/$VERSION"
-H() { gh api "repos/propensive/$NAME/releases/tags/$VERSION" --jq ".assets[] | select(.name==\"$1\") | .digest" | sed 's/sha256://'; }
+BASE="https://github.com/propensive/$NAME/releases/download/$TAG"
+
+H() {
+  if [ -n "$ASSETS" ]; then
+    { sha256sum "$ASSETS/$1" 2>/dev/null || shasum -a 256 "$ASSETS/$1"; } | cut -d' ' -f1
+  else
+    gh api "repos/propensive/$NAME/releases/tags/$TAG" --jq ".assets[] | select(.name==\"$1\") | .digest" | sed 's/sha256://'
+  fi
+}
+
+# Every digest is read before the script is written: a command substitution inside the here-document
+# below could fail without stopping this script, and an installer embedding an empty digest would
+# refuse every download it makes.
+for label in linux-x64 linux-arm64 macos-x64 macos-arm64; do
+  digest=$(H "$NAME-$label")
+  case "$digest" in
+    *[!0-9a-f]*|'') echo "generate-install: no SHA-256 for $NAME-$label" >&2; exit 1 ;;
+  esac
+  eval "DIGEST_$(printf '%s' "$label" | tr - _)=\$digest"
+done
 
 # A line of the closing box, padded to its width whatever the name's length.
 BOX() { printf '# ┃  %-82s┃\n' "$1"; }
@@ -56,10 +82,10 @@ esac
 label="\$os-\$arch"
 
 case "\$label" in
-  linux-x64)   expected=$(H $NAME-linux-x64) ;;
-  linux-arm64) expected=$(H $NAME-linux-arm64) ;;
-  macos-x64)   expected=$(H $NAME-macos-x64) ;;
-  macos-arm64) expected=$(H $NAME-macos-arm64) ;;
+  linux-x64)   expected=$DIGEST_linux_x64 ;;
+  linux-arm64) expected=$DIGEST_linux_arm64 ;;
+  macos-x64)   expected=$DIGEST_macos_x64 ;;
+  macos-arm64) expected=$DIGEST_macos_arm64 ;;
   *)           echo "$NAME: no executable is published for \$label" >&2; exit 1 ;;
 esac
 

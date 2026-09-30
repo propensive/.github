@@ -58,6 +58,16 @@
           "type": 302
         },
         {
+          "source": "/xek",
+          "destination": "https://github.com/propensive/xek/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
+          "source": "/xek/**",
+          "destination": "https://github.com/propensive/xek/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
           "source": "**",
           "destination": "https://propensive.com/",
           "type": 302
