@@ -232,9 +232,38 @@ done < <(config verify)
 
 # The `xeq` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
+#
+# Which builder that is, the pin in etc/xeq.tsv decides. From xek 0.10 it is the `xek` command —
+# an XEK executable itself, run on a JVM its launcher finds, or downloads where none is suitable
+# (`XEK_DOWNLOAD`) — with a conventional command line; up to 0.9 it was a shell script of
+# subcommands. `xeq_native` and `xeq_dispatch` speak whichever the pin names, so a repository
+# moves between the two by changing its pin alone. The new builder is run once here, so that a
+# builder which cannot run fails the release before anything is published.
+XEK_COMMAND=""
 if [[ -n "$LAUNCHER" ]]; then
   "$PROPENSIVE_SHARED" xeq-fetch.sh
+  xeq_version=$(awk -F'\t' '$1=="version"{print $2}' etc/xeq.tsv)
+  if awk -F. '{ exit !($1 > 0 || $2 >= 10) }' <<< "$xeq_version"; then
+    XEK_COMMAND=1
+    XEK_DOWNLOAD=1 dist/xeq --version || fail "the xek $xeq_version builder did not run"
+  fi
 fi
+
+# The executable for platform `$2` from the JAR `$1`, written to `$3`.
+xeq_native() {
+  if [[ -n "$XEK_COMMAND" ]]
+  then XEK_DOWNLOAD=1 dist/xeq --platform "$2" "$1" "$3"
+  else dist/xeq build --jar "$1" --out "$3" --target "$2"
+  fi
+}
+
+# The dispatcher `$2`, from the manifest `$1` of `label<TAB>url<TAB>sha256` rows.
+xeq_dispatch() {
+  if [[ -n "$XEK_COMMAND" ]]
+  then XEK_DOWNLOAD=1 dist/xeq --dispatch "$1" "$2"
+  else dist/xeq dispatch --out "$2" --manifest "$1"
+  fi
+}
 
 # ---------------------------- ROLLBACK ----------------------------
 #
@@ -520,7 +549,7 @@ else
   DIST=$(mktemp -d)
   for platform in $PLATFORMS; do
     ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
-    dist/xeq build --jar "$NAME.jar" --out "$DIST/$NAME-$platform$ext" --target "$platform" ||
+    xeq_native "$NAME.jar" "$platform" "$DIST/$NAME-$platform$ext" ||
       fail "building the $platform executable failed"
   done
   gh release upload "$TAG" --repo "$REPO" "$DIST"/"$NAME"-* >/dev/null ||
@@ -538,7 +567,7 @@ else
     sleep 5
   done
   sed -i.bak "s/^$NAME-//; s/\\.exe\t/\t/" "$MANIFEST"
-  dist/xeq dispatch --out "$DIST/$NAME" --manifest "$MANIFEST" || fail "building the dispatcher failed"
+  xeq_dispatch "$MANIFEST" "$DIST/$NAME" || fail "building the dispatcher failed"
   gh release upload "$TAG" --repo "$REPO" "$DIST/$NAME" >/dev/null ||
     fail "uploading the dispatcher failed"
 
