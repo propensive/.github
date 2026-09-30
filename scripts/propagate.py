@@ -124,6 +124,39 @@ def api(path: str, missing_ok: bool = False, **payload) -> dict | None:
     return None if out is None else json.loads(out)
 
 
+def graphql(query: str, **variables) -> dict:
+    out = gh("api", "graphql", "--input", "-", payload={"query": query, "variables": variables})
+    result = json.loads(out or "{}")
+    if result.get("errors"):
+        raise RuntimeError(f"gh api graphql: {result['errors']}")
+    return result["data"]
+
+
+# One commit of whole files onto an existing branch, through `createCommitOnBranch`, which GitHub
+# signs, so the commit is verified and satisfies a consumer's "require signed commits" rule. A
+# commit made through the Git Data REST API (a tree, a commit, a ref) is left unsigned.
+COMMIT_ON_BRANCH = """
+mutation($input: CreateCommitOnBranchInput!) {
+  createCommitOnBranch(input: $input) { commit { oid } }
+}
+"""
+
+
+def commit_files(repo: str, branch: str, head: str, message: str, files: dict[str, str]) -> str:
+    headline, _, body = message.partition("\n\n")
+    additions = [
+        {"path": path, "contents": base64.b64encode(text.encode("utf-8")).decode("ascii")}
+        for path, text in files.items()
+    ]
+    data = graphql(COMMIT_ON_BRANCH, input={
+        "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+        "expectedHeadOid": head,
+        "message": {"headline": headline, "body": body},
+        "fileChanges": {"additions": additions},
+    })
+    return data["createCommitOnBranch"]["commit"]["oid"]
+
+
 def read(repo: str, path: str, ref: str) -> str | None:
     content = api(f"repos/{repo}/contents/{path}?ref={ref}", missing_ok=True)
     return None if content is None else base64.b64decode(content["content"]).decode("utf-8")
@@ -230,13 +263,14 @@ def propose(consumer: str, name: str, title: str, version: str,
             sys.stderr.write(diff(path, before, after))
         return
 
-    tree = api(f"repos/{consumer}/git/commits/{head}")["tree"]["sha"]
-    new_tree = api(f"repos/{consumer}/git/trees", base_tree=tree, tree=[
-        {"path": path, "mode": "100644", "type": "blob", "content": after}
-        for path, (_, after) in files.items()
-    ])["sha"]
-    commit = api(f"repos/{consumer}/git/commits", message=message, tree=new_tree, parents=[head])["sha"]
-    api(f"repos/{consumer}/git/refs", ref=f"refs/heads/{branch}", sha=commit)
+    # The branch first, at the consumer's head, and then the commit onto it. Should the commit fail,
+    # the branch goes too, since a branch that exists is taken above to mean "already proposed".
+    api(f"repos/{consumer}/git/refs", ref=f"refs/heads/{branch}", sha=head)
+    try:
+        commit_files(consumer, branch, head, message, {path: after for path, (_, after) in files.items()})
+    except Exception:
+        gh("api", "-X", "DELETE", f"repos/{consumer}/git/refs/heads/{branch}", missing_ok=True)
+        raise
     url = gh("pr", "create", "--repo", consumer, "--draft", "--base", base, "--head", branch,
              "--title", subject, "--body", body)
     log(f"{consumer}: opened {url.strip() if url else branch}")
