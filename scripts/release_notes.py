@@ -28,7 +28,7 @@ Environment: RELEASE_NAME, RELEASE_TITLE, RELEASE_REPO_NAME, RELEASE_LIBRARIES (
 RELEASE_LAUNCHER (non-empty when executables are published), RELEASE_MIGRATION (the notes
 directory, or empty); RELEASE_TAG_PREFIXES, for a repository whose tags are not bare versions
 (`xek- xeq-`: the first prefixes this release's tag, and a tag under any of them is an earlier
-release); RELEASE_ASSETS, the directory of an assembled release's files, which the lead and the
+release; a first entry of `-` means the tag is the bare version, the rest earlier prefixes); RELEASE_ASSETS, the directory of an assembled release's files, which the lead and the
 Assets section then describe in place of jars; GITHUB_TOKEN lifts the API rate limit.
 """
 
@@ -132,12 +132,16 @@ def listed(items: list[str]) -> str:
     return ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
+def prefix(entry: str) -> str:
+    return "" if entry == "-" else entry
+
+
 def tag(version: str) -> str:
-    return (PREFIXES[0] if PREFIXES else "") + version
+    return (prefix(PREFIXES[0]) if PREFIXES else "") + version
 
 
 def previous_tag(version: str) -> str:
-    patterns = [f"{prefix}[0-9]*" for prefix in PREFIXES] or ["[0-9]*.[0-9]*.[0-9]*"]
+    patterns = [f"{prefix(entry)}[0-9]*" for entry in PREFIXES] or ["[0-9]*.[0-9]*.[0-9]*"]
     matches = [argument for pattern in patterns for argument in ("--match", pattern)]
     return git("describe", "--tags", "--abbrev=0", *matches, f"{tag(version)}^")
 

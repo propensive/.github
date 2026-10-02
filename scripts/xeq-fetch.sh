@@ -6,9 +6,10 @@
 # propensive/xek (formerly propensive/xeq) with the runner stubs. Applications shell out to it to
 # package their executables rather than carrying a copy of their own; each repository pins the
 # version and the script's SHA-256 in its own etc/xeq.tsv, so this script can be shared while the
-# pin stays local. Releases since the rename are tagged `xek-<version>` with the script as `xek`;
-# those before it, `xeq-<version>` with the script as `xeq`. Both are tried, newest naming first,
-# and the pinned SHA-256 decides what is accepted, so a pin names a version and never a URL.
+# pin stays local. Releases from 1.0.0 are tagged with the bare version, with the command as `xek`;
+# those from the rename up to 0.10, `xek-<version>`, also as `xek`; those before it,
+# `xeq-<version>`, as `xeq`. All are tried, newest naming first, and the pinned SHA-256 decides
+# what is accepted, so a pin names a version and never a URL.
 #
 # Usage: etc/shared xeq-fetch.sh
 
@@ -24,7 +25,8 @@ BASE="https://github.com/propensive/xek/releases/download"
 mkdir -p dist
 TMP=dist/.xeq.part
 fetch() { if command -v curl >/dev/null 2>&1; then curl -fsSL "$1" -o "$TMP"; else wget -qO "$TMP" "$1"; fi; }
-fetch "$BASE/xek-$VERSION/xek" 2>/dev/null || fetch "$BASE/xeq-$VERSION/xeq" ||
+fetch "$BASE/$VERSION/xek" 2>/dev/null || fetch "$BASE/xek-$VERSION/xek" 2>/dev/null ||
+  fetch "$BASE/xeq-$VERSION/xeq" ||
   { echo "xeq-fetch: no builder script published for version $VERSION" >&2; rm -f "$TMP"; exit 1; }
 GOT=$( { sha256sum "$TMP" 2>/dev/null || shasum -a 256 "$TMP"; } | cut -d' ' -f1)
 if [[ "$GOT" != "$WANT" ]]; then
