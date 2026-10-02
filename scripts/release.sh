@@ -89,11 +89,14 @@ REPO=${RELEASE_REPO:-propensive/$NAME}
 ASSEMBLE=$(config assemble)
 [[ -z "$ASSEMBLE" || -z "$LAUNCHER" ]] || fail "$CONFIG: 'assemble' and 'launcher' cannot both be set"
 
-# The tag is the version, unless the repository's tags carry a prefix: xek's are `xek-0.10`. Either
+# The tag is the version, unless the repository's tags carry a prefix: xek's were `xek-0.10`. Either
 # may be given as the argument; in the workflow the tag arrives as GITHUB_REF_NAME, and must carry
 # the prefix. Everything that names the tag or the release uses $TAG, and $VERSION is the version.
+# A `tag` line beginning `-` says the tag is the bare version now, while the prefixes after it
+# still name earlier releases, for the notes: xek's is `- xek- xeq-`.
 PREFIXES=$(config tag)
 PREFIX=${PREFIXES%% *}
+[[ "$PREFIX" == "-" ]] && PREFIX=""
 REF=${1:-${GITHUB_REF_NAME:-}}
 [[ -n "$REF" ]] || fail "no version given and GITHUB_REF_NAME is unset"
 if [[ -z "${1:-}" && -n "$PREFIX" && "$REF" != "$PREFIX"* ]]; then
