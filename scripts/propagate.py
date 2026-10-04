@@ -13,8 +13,9 @@ For each consumer it edits, on a new branch `pins/<name>-<version>` from the def
                consumer shares with the release's own `etc/refs`, set to the version the release
                was built against — so a Pyrocosm release carries its Soundness to Pyrocosm's
                consumers in the same pull request
-  etc/xeq.tsv  the builder pin, set to the release's own (or, for an xek runner release, to the
-               release itself)
+  etc/xek.tsv  the builder pin, set to the release's own (or, for an xek runner release, to the
+               release itself); a consumer that has not yet renamed it has etc/xeq.tsv, with its
+               hash keyed `xeq`, which is edited in place
 
 A pin only ever moves forwards: a consumer that already pins something newer — a later release,
 or a snapshot of a later version — keeps it; a snapshot of the released version gives way to
@@ -30,7 +31,7 @@ Usage: etc/shared propagate.py [--dry-run] [--repo owner/name] [--title T] [--xe
 
   --repo       the released repository; defaults to $RELEASE_REPO_NAME, which release.sh exports
   --title      its display name; defaults to $RELEASE_TITLE, else the repository's name
-  --xek        an xek runner release, with the SHA-256 of its builder script: consumers' etc/xeq.tsv
+  --xek        an xek runner release, with the SHA-256 of its builder script: consumers' etc/xek.tsv
                is what moves, not their etc/refs. Implied when $RELEASE_ASSETS, the directory of
                an assembled release's files (which release.sh exports), holds the script `xek`
   --dry-run    print what each pull request would change, and write nothing
@@ -88,11 +89,17 @@ def pins(text: str) -> dict[str, str]:
     return result
 
 
-def xeq_pin(text: str) -> tuple[str, str] | None:
+# The builder pin, named for xek; a repository that has not yet renamed it keeps etc/xeq.tsv,
+# with its hash keyed `xeq`. Both are read, the new name first, until every repository has moved.
+BUILDER_PINS = ("etc/xek.tsv", "etc/xeq.tsv")
+
+
+def builder_pin(text: str) -> tuple[str, str] | None:
     fields = dict(
         line.split("\t", 1) for line in text.splitlines() if "\t" in line and not line.startswith("#")
     )
-    version, sha = fields.get("version", "").strip(), fields.get("xeq", "").strip()
+    version = fields.get("version", "").strip()
+    sha = (fields.get("xek") or fields.get("xeq") or "").strip()
     return (version, sha) if version and sha else None
 
 
@@ -179,17 +186,17 @@ def edit_refs(text: str, targets: dict[str, str], changes: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def edit_xeq(text: str, target: tuple[str, str], changes: list[str]) -> str:
-    current = xeq_pin(text)
+def edit_builder(text: str, target: tuple[str, str], changes: list[str]) -> str:
+    current = builder_pin(text)
     if current is None or not newer(target[0], current[0]):
         return text
-    changes.append(f"the `xeq` builder {current[0]} → {target[0]}")
+    changes.append(f"the `xek` builder {current[0]} → {target[0]}")
     lines = []
     for line in text.splitlines():
         if line.startswith("version\t"):
             line = f"version\t{target[0]}"
-        elif line.startswith("xeq\t"):
-            line = f"xeq\t{target[1]}"
+        elif line.startswith(("xek\t", "xeq\t")):
+            line = f"{line.split(chr(9), 1)[0]}\t{target[1]}"
         lines.append(line)
     return "\n".join(lines) + "\n"
 
@@ -202,7 +209,7 @@ def diff(path: str, before: str, after: str) -> str:
 # ---------------------------- ONE CONSUMER ----------------------------
 
 def propose(consumer: str, name: str, title: str, version: str,
-            refs_targets: dict[str, str], xeq_target: tuple[str, str] | None,
+            refs_targets: dict[str, str], builder_target: tuple[str, str] | None,
             released: str, xek: bool, dry_run: bool) -> None:
     info = api(f"repos/{consumer}")
     base = info["default_branch"]
@@ -225,16 +232,18 @@ def propose(consumer: str, name: str, title: str, version: str,
         if len(changes) > before:
             files["etc/refs"] = (refs, edited)
 
-    xeq = read(consumer, "etc/xeq.tsv", head)
-    if xeq_target is not None:
-        if xeq is None:
+    if builder_target is not None:
+        found = next(((path, text) for path in BUILDER_PINS
+                      if (text := read(consumer, path, head)) is not None), None)
+        if found is None:
             if xek:
-                log(f"{consumer}: has no etc/xeq.tsv to move to {title} {version}")
+                log(f"{consumer}: has no etc/xek.tsv to move to {title} {version}")
         else:
+            path, builder = found
             before = len(changes)
-            edited = edit_xeq(xeq, xeq_target, changes)
+            edited = edit_builder(builder, builder_target, changes)
             if len(changes) > before:
-                files["etc/xeq.tsv"] = (xeq, edited)
+                files[path] = (builder, edited)
 
     if not files:
         log(f"{consumer}: already current; nothing to propose")
@@ -329,22 +338,23 @@ def main(arguments: list[str]) -> int:
         return 0
 
     # What the consumers move to: this release, what it was built against, and its builder.
-    refs_file, xeq_file = Path("etc/refs"), Path("etc/xeq.tsv")
+    refs_file = Path("etc/refs")
+    builder_file = next((Path(path) for path in BUILDER_PINS if Path(path).exists()), None)
     if xek:
         refs_targets: dict[str, str] = {}
-        xeq_target: tuple[str, str] | None = (version, xek_sha)
+        builder_target: tuple[str, str] | None = (version, xek_sha)
     else:
         refs_targets = {
             pin: pinned for pin, pinned in (pins(refs_file.read_text()) if refs_file.exists() else {}).items()
             if order(pinned) is not None and order(pinned)[1] == 1  # releases only, never a snapshot
         }
         refs_targets[released] = version
-        xeq_target = xeq_pin(xeq_file.read_text()) if xeq_file.exists() else None
+        builder_target = builder_pin(builder_file.read_text()) if builder_file else None
 
     failures = 0
     for consumer in consumers:
         try:
-            propose(consumer, name, title, version, refs_targets, xeq_target, released, xek, dry_run)
+            propose(consumer, name, title, version, refs_targets, builder_target, released, xek, dry_run)
         except Exception as error:  # one consumer's failure must not stop the others
             failures += 1
             log(f"{consumer}: {error}")

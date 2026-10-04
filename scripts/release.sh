@@ -243,38 +243,41 @@ done < <(config verify)
 "$PROPENSIVE_SHARED" deps.py check
 [[ -n "$ASSEMBLE" ]] || "$PROPENSIVE_SHARED" sync-deps.sh
 
-# The `xeq` builder packages the executables. Fetch and verify it before anything is published,
+# The `xek` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
 #
-# Which builder that is, the pin in etc/xeq.tsv decides. From xek 0.10 it is the `xek` command —
+# Which builder that is, the pin in etc/xek.tsv (etc/xeq.tsv, before a repository renamed it)
+# decides. From xek 0.10 it is the `xek` command —
 # an XEK executable itself, run on a JVM its launcher finds, or downloads where none is suitable
 # (`XEK_DOWNLOAD`) — with a conventional command line; up to 0.9 it was a shell script of
-# subcommands. `xeq_native` and `xeq_dispatch` speak whichever the pin names, so a repository
+# subcommands. `xek_native` and `xek_dispatch` speak whichever the pin names, so a repository
 # moves between the two by changing its pin alone. The new builder is run once here, so that a
 # builder which cannot run fails the release before anything is published.
 XEK_COMMAND=""
 if [[ -n "$LAUNCHER" ]]; then
-  "$PROPENSIVE_SHARED" xeq-fetch.sh
-  xeq_version=$(awk -F'\t' '$1=="version"{print $2}' etc/xeq.tsv)
-  if awk -F. '{ exit !($1 > 0 || $2 >= 10) }' <<< "$xeq_version"; then
+  "$PROPENSIVE_SHARED" xek-fetch.sh
+  xek_pin=etc/xek.tsv
+  [[ -e "$xek_pin" ]] || xek_pin=etc/xeq.tsv
+  xek_version=$(awk -F'\t' '$1=="version"{print $2}' "$xek_pin")
+  if awk -F. '{ exit !($1 > 0 || $2 >= 10) }' <<< "$xek_version"; then
     XEK_COMMAND=1
-    XEK_DOWNLOAD=1 dist/xeq --version || fail "the xek $xeq_version builder did not run"
+    XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
   fi
 fi
 
 # The executable for platform `$2` from the JAR `$1`, written to `$3`.
-xeq_native() {
+xek_native() {
   if [[ -n "$XEK_COMMAND" ]]
-  then XEK_DOWNLOAD=1 dist/xeq --platform "$2" "$1" "$3"
-  else dist/xeq build --jar "$1" --out "$3" --target "$2"
+  then XEK_DOWNLOAD=1 dist/xek --platform "$2" "$1" "$3"
+  else dist/xek build --jar "$1" --out "$3" --target "$2"
   fi
 }
 
 # The dispatcher `$2`, from the manifest `$1` of `label<TAB>url<TAB>sha256` rows.
-xeq_dispatch() {
+xek_dispatch() {
   if [[ -n "$XEK_COMMAND" ]]
-  then XEK_DOWNLOAD=1 dist/xeq --dispatch "$1" "$2"
-  else dist/xeq dispatch --out "$2" --manifest "$1"
+  then XEK_DOWNLOAD=1 dist/xek --dispatch "$1" "$2"
+  else dist/xek dispatch --out "$2" --manifest "$1"
   fi
 }
 
@@ -556,13 +559,13 @@ else
       fail "$lib did not externalize against this release; not uploading the executables"
   done
 
-  # An XEQ executable is a bare runner stub, a configuration record and the platform-independent
+  # An XEK executable is a bare runner stub, a configuration record and the platform-independent
   # repackaged JAR joined end to end — not compiled — so one machine cross-"builds" every platform.
   PLATFORMS="linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64"
   DIST=$(mktemp -d)
   for platform in $PLATFORMS; do
     ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
-    xeq_native "$NAME.jar" "$platform" "$DIST/$NAME-$platform$ext" ||
+    xek_native "$NAME.jar" "$platform" "$DIST/$NAME-$platform$ext" ||
       fail "building the $platform executable failed"
   done
   gh release upload "$TAG" --repo "$REPO" "$DIST"/"$NAME"-* >/dev/null ||
@@ -580,7 +583,7 @@ else
     sleep 5
   done
   sed -i.bak "s/^$NAME-//; s/\\.exe\t/\t/" "$MANIFEST"
-  xeq_dispatch "$MANIFEST" "$DIST/$NAME" || fail "building the dispatcher failed"
+  xek_dispatch "$MANIFEST" "$DIST/$NAME" || fail "building the dispatcher failed"
   gh release upload "$TAG" --repo "$REPO" "$DIST/$NAME" >/dev/null ||
     fail "uploading the dispatcher failed"
 
