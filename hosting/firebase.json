@@ -68,6 +68,26 @@
           "type": 302
         },
         {
+          "source": "/fury",
+          "destination": "https://github.com/propensive/fury/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
+          "source": "/fury/**",
+          "destination": "https://github.com/propensive/fury/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
+          "source": "/fever",
+          "destination": "https://github.com/propensive/fever/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
+          "source": "/fever/**",
+          "destination": "https://github.com/propensive/fever/releases/latest/download/install.sh",
+          "type": 302
+        },
+        {
           "source": "**",
           "destination": "https://propensive.com/",
           "type": 302
