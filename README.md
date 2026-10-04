@@ -3,7 +3,7 @@
 Reusable GitHub Actions workflows and scripts for Propensive's Soundness-ecosystem repositories
 ([soundness](https://github.com/propensive/soundness), [pyrocosm](https://github.com/propensive/pyrocosm),
 [fume](https://github.com/propensive/fume), [flame](https://github.com/propensive/flame),
-[flair](https://github.com/propensive/flair) and [xeq](https://github.com/propensive/xeq)).
+[flair](https://github.com/propensive/flair) and [xek](https://github.com/propensive/xek)).
 
 ## Scripts, through `etc/shared`
 
@@ -22,7 +22,7 @@ repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at
 | `release.sh` | publishes the tagged version: the gates, the jars, and (for an application) its executables |
 | `release_notes.py` | the release notes, assembled the same way for every repository |
 | `sync_releases.py`, `filtered_tree.py` | the helpers the above are built on |
-| `xeq-fetch.sh`, `generate-install.sh` | the `xeq` builder pin, and the installer script |
+| `xek-fetch.sh`, `generate-install.sh` | the `xek` builder pin, and the installer script |
 
 ## Dependency pins: `etc/refs`
 
@@ -241,7 +241,7 @@ propensive/flair
 `propagate.py` makes each pull request, on a branch `pins/<name>-<version>` of the consumer. It
 moves the released repository's pin in the consumer's `etc/refs` to the release, and every other
 pin the consumer shares with the release's own `etc/refs` to the version the release was built
-against; and it moves the consumer's `etc/xeq.tsv` to the release's. So a Pyrocosm release
+against; and it moves the consumer's `etc/xek.tsv` to the release's. So a Pyrocosm release
 carries the Soundness and the xek it was built against to fume, flame and flair in one pull
 request each. A pin only moves forwards — a consumer already on something newer keeps it — and a
 consumer with nothing to change, or whose branch already exists, is left alone.

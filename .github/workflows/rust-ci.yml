@@ -1,7 +1,7 @@
 name: Rust CI
 
 # Reusable CI for the Rust side of Propensive's repositories (tel's reference implementation,
-# xeq's runner stubs): build and test a Cargo workspace on the stable toolchain, with the
+# xek's runner stubs): build and test a Cargo workspace on the stable toolchain, with the
 # registry and target directory cached against the lockfile.
 #
 # Contract with the caller: a `Cargo.toml` (and, for reproducible caching, a checked-in
