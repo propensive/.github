@@ -246,8 +246,7 @@ done < <(config verify)
 # The `xek` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
 #
-# Which builder that is, the pin in etc/xek.tsv (etc/xeq.tsv, before a repository renamed it)
-# decides. From xek 0.10 it is the `xek` command —
+# Which builder that is, the pin in etc/xek.tsv decides. From xek 0.10 it is the `xek` command —
 # an XEK executable itself, run on a JVM its launcher finds, or downloads where none is suitable
 # (`XEK_DOWNLOAD`) — with a conventional command line; up to 0.9 it was a shell script of
 # subcommands. `xek_native` and `xek_dispatch` speak whichever the pin names, so a repository
@@ -256,9 +255,7 @@ done < <(config verify)
 XEK_COMMAND=""
 if [[ -n "$LAUNCHER" ]]; then
   "$PROPENSIVE_SHARED" xek-fetch.sh
-  xek_pin=etc/xek.tsv
-  [[ -e "$xek_pin" ]] || xek_pin=etc/xeq.tsv
-  xek_version=$(awk -F'\t' '$1=="version"{print $2}' "$xek_pin")
+  xek_version=$(awk -F'\t' '$1=="version"{print $2}' etc/xek.tsv)
   if awk -F. '{ exit !($1 > 0 || $2 >= 10) }' <<< "$xek_version"; then
     XEK_COMMAND=1
     XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
