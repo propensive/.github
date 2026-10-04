@@ -155,7 +155,8 @@ one substantive difference from the three scripts this replaced. The calling job
 - **CI is already green** on that commit — the release does not re-run the suite. Runs of the
   release workflow itself are ignored, so a rolled-back attempt does not block the retry;
 - `val <name>Version` in `build.mill`, where the repository has one, equals the tag;
-- the migration notes, where the repository keeps them, are finalised for this version;
+- the migration notes, where the repository keeps them, exist for this version, and no other
+  version's notes are unreleased;
 - every `verify` command in `etc/release` passes;
 - `deps.py check`: every pin, transitively, is a published release.
 
@@ -178,7 +179,7 @@ silently drop a gate.
 | `launcher` | the launcher module, when executables are published; absent for a library |
 | `hints` | the `--github` publication homes Burdock matches the classpath against |
 | `probes` | modules whose `publishVersion` must equal the tag before anything is published |
-| `migration` | the migration-notes directory, when the repository keeps them |
+| `migration` | the migration-notes directory, when the repository keeps them: one `<version>.md` per release, the next one's accumulating under its own name until it is tagged |
 | `verify` | an extra gate command; may be repeated, and each is run in order |
 | `tag` | the tag prefix, for a repository whose tags are not bare versions (`xek-`), then any earlier prefixes whose tags are releases too (`xeq-`); a first entry of `-` says the tag is the bare version now, the rest naming earlier releases |
 | `assemble` | a command writing the release's assets into `$RELEASE_ASSETS`, in place of the Mill build and `release.stage` |

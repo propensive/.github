@@ -209,14 +209,24 @@ if [[ -n "$PINNED" && "$PINNED" != "$VERSION" ]]; then
   fail "build.mill pins ${NAME}Version=$PINNED, not $VERSION; bump it, merge, and re-tag"
 fi
 
-# The migration notes must be finalised for this version: the release PR renames pending.md to
-# <version>.md, and the first change after the release starts a new pending.md. A surviving
-# pending.md means that PR has not merged, so the tag names a commit whose notes are unreleased.
+# The migration notes accumulate in <version>.md, named from the start after the release they
+# will be part of: the first change after a release creates the next one, so no change has to
+# merge before the tag. The notes for this version must exist, and no other notes may be
+# unreleased: tagging 0.70.1 while the changes are recorded in 0.71.0.md would publish the wrong
+# file and strand the right one. A pending.md is from the earlier convention, which renamed it.
 if [[ -n "$MIGRATION" ]]; then
   [[ ! -e "$MIGRATION/pending.md" ]] ||
-    fail "$MIGRATION/pending.md still exists; rename it to $MIGRATION/$VERSION.md and merge that first"
+    fail "$MIGRATION/pending.md exists; rename it to $MIGRATION/$VERSION.md and merge that first"
   [[ -f "$MIGRATION/$VERSION.md" ]] ||
     fail "$MIGRATION/$VERSION.md is missing; the migration notes for $VERSION must be committed before tagging"
+  TAGS=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/$PREFIX" --jq '.[].ref') ||
+    fail "could not list the tags of $REPO"
+  for notes in "$MIGRATION"/*.md; do
+    other=$(basename "$notes" .md)
+    [[ "$other" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && "$other" != "$VERSION" ]] || continue
+    grep -qxF "refs/tags/$PREFIX$other" <<< "$TAGS" ||
+      fail "$notes is unreleased; record its changes in $MIGRATION/$VERSION.md, or tag $PREFIX$other instead"
+  done
   note "migration notes for $VERSION are in place"
 fi
 
