@@ -11,19 +11,14 @@
 # `xeq-<version>`, as `xeq`. All are tried, newest naming first, and the pinned SHA-256 decides
 # what is accepted, so a pin names a version and never a URL.
 #
-# A repository that has not yet renamed its pin is read from etc/xeq.tsv, whose hash is keyed
-# `xeq`; that fallback goes once every repository has moved.
-#
 # Usage: etc/shared xek-fetch.sh
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 PIN=etc/xek.tsv
-KEY=xek
-[[ -e "$PIN" ]] || { PIN=etc/xeq.tsv; KEY=xeq; }
 VERSION=$(awk -F'\t' '$1=="version"{print $2}' "$PIN")
-WANT=$(awk -F'\t' -v key="$KEY" '$1==key{print $2}' "$PIN")
+WANT=$(awk -F'\t' '$1=="xek"{print $2}' "$PIN")
 [[ -n "$VERSION" && -n "$WANT" ]] || { echo "xek-fetch: bad pin $PIN" >&2; exit 1; }
 
 BASE="https://github.com/propensive/xek/releases/download"

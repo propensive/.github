@@ -14,8 +14,7 @@ For each consumer it edits, on a new branch `pins/<name>-<version>` from the def
                was built against — so a Pyrocosm release carries its Soundness to Pyrocosm's
                consumers in the same pull request
   etc/xek.tsv  the builder pin, set to the release's own (or, for an xek runner release, to the
-               release itself); a consumer that has not yet renamed it has etc/xeq.tsv, with its
-               hash keyed `xeq`, which is edited in place
+               release itself)
 
 A pin only ever moves forwards: a consumer that already pins something newer — a later release,
 or a snapshot of a later version — keeps it; a snapshot of the released version gives way to
@@ -89,9 +88,7 @@ def pins(text: str) -> dict[str, str]:
     return result
 
 
-# The builder pin, named for xek; a repository that has not yet renamed it keeps etc/xeq.tsv,
-# with its hash keyed `xeq`. Both are read, the new name first, until every repository has moved.
-BUILDER_PINS = ("etc/xek.tsv", "etc/xeq.tsv")
+BUILDER_PIN = "etc/xek.tsv"
 
 
 def builder_pin(text: str) -> tuple[str, str] | None:
@@ -99,7 +96,7 @@ def builder_pin(text: str) -> tuple[str, str] | None:
         line.split("\t", 1) for line in text.splitlines() if "\t" in line and not line.startswith("#")
     )
     version = fields.get("version", "").strip()
-    sha = (fields.get("xek") or fields.get("xeq") or "").strip()
+    sha = fields.get("xek", "").strip()
     return (version, sha) if version and sha else None
 
 
@@ -195,8 +192,8 @@ def edit_builder(text: str, target: tuple[str, str], changes: list[str]) -> str:
     for line in text.splitlines():
         if line.startswith("version\t"):
             line = f"version\t{target[0]}"
-        elif line.startswith(("xek\t", "xeq\t")):
-            line = f"{line.split(chr(9), 1)[0]}\t{target[1]}"
+        elif line.startswith("xek\t"):
+            line = f"xek\t{target[1]}"
         lines.append(line)
     return "\n".join(lines) + "\n"
 
@@ -233,17 +230,15 @@ def propose(consumer: str, name: str, title: str, version: str,
             files["etc/refs"] = (refs, edited)
 
     if builder_target is not None:
-        found = next(((path, text) for path in BUILDER_PINS
-                      if (text := read(consumer, path, head)) is not None), None)
-        if found is None:
+        builder = read(consumer, BUILDER_PIN, head)
+        if builder is None:
             if xek:
-                log(f"{consumer}: has no etc/xek.tsv to move to {title} {version}")
+                log(f"{consumer}: has no {BUILDER_PIN} to move to {title} {version}")
         else:
-            path, builder = found
             before = len(changes)
             edited = edit_builder(builder, builder_target, changes)
             if len(changes) > before:
-                files[path] = (builder, edited)
+                files[BUILDER_PIN] = (builder, edited)
 
     if not files:
         log(f"{consumer}: already current; nothing to propose")
@@ -339,7 +334,7 @@ def main(arguments: list[str]) -> int:
 
     # What the consumers move to: this release, what it was built against, and its builder.
     refs_file = Path("etc/refs")
-    builder_file = next((Path(path) for path in BUILDER_PINS if Path(path).exists()), None)
+    builder_file = Path(BUILDER_PIN)
     if xek:
         refs_targets: dict[str, str] = {}
         builder_target: tuple[str, str] | None = (version, xek_sha)
@@ -349,7 +344,7 @@ def main(arguments: list[str]) -> int:
             if order(pinned) is not None and order(pinned)[1] == 1  # releases only, never a snapshot
         }
         refs_targets[released] = version
-        builder_target = builder_pin(builder_file.read_text()) if builder_file else None
+        builder_target = builder_pin(builder_file.read_text()) if builder_file.exists() else None
 
     failures = 0
     for consumer in consumers:
