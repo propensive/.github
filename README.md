@@ -22,7 +22,7 @@ repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at
 | `release.sh` | publishes the tagged version: the gates, the jars, and (for an application) its executables |
 | `release_notes.py` | the release notes, assembled the same way for every repository |
 | `sync_releases.py`, `filtered_tree.py` | the helpers the above are built on |
-| `xek-fetch.sh`, `generate-install.sh` | the `xek` builder pin, and the installer script |
+| `xek-fetch.sh` | the `xek` builder pin; `xek installer` writes the installers `release.sh` attaches |
 
 ## Dependency pins: `etc/refs`
 

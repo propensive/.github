@@ -329,10 +329,9 @@ Also attached: one `{NAME}` executable per platform (`{NAME}-linux-x64`, `{NAME}
 `{NAME}-macos-x64`, `{NAME}-macos-arm64` and `{NAME}-windows-x64.exe`); `{NAME}`, the polyglot
 bootstrap — a small any-shell script, to be renamed `{NAME}.bat` or `{NAME}.ps1` on Windows,
 which downloads the right executable, verifies its checksum, replaces itself and re-invokes; and
-`install.sh`, which <https://propensive.dev/{NAME}> redirects to. Each executable externalizes
-the {'library' if len(plain) == 1 else 'libraries'} above, resolving
-further dependencies from the Soundness and proscala releases and from Maven Central on first
-run.
+`install.sh` and `install.ps1`, which <https://propensive.dev/{NAME}> serves. Each executable
+externalizes the {'library' if len(plain) == 1 else 'libraries'} above, resolving further
+dependencies from the Soundness and proscala releases and from Maven Central on first run.
 """
     return text
 

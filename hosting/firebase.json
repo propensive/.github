@@ -1,4 +1,10 @@
 {
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "installer"
+    }
+  ],
   "hosting": [
     {
       "target": "propensive",
@@ -8,89 +14,18 @@
       ],
       "redirects": [
         {
-          "source": "/flame",
-          "destination": "https://github.com/propensive/flame/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/flame/**",
-          "destination": "https://github.com/propensive/flame/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fume",
-          "destination": "https://github.com/propensive/fume/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fume/**",
-          "destination": "https://github.com/propensive/fume/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/flair",
-          "destination": "https://github.com/propensive/flair/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/flair/**",
-          "destination": "https://github.com/propensive/flair/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/tel",
-          "destination": "https://github.com/propensive/tel/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/tel/**",
-          "destination": "https://github.com/propensive/tel/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/lira",
-          "destination": "https://github.com/propensive/lira/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/lira/**",
-          "destination": "https://github.com/propensive/lira/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/xek",
-          "destination": "https://github.com/propensive/xek/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/xek/**",
-          "destination": "https://github.com/propensive/xek/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fury",
-          "destination": "https://github.com/propensive/fury/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fury/**",
-          "destination": "https://github.com/propensive/fury/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fever",
-          "destination": "https://github.com/propensive/fever/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "/fever/**",
-          "destination": "https://github.com/propensive/fever/releases/latest/download/install.sh",
-          "type": 302
-        },
-        {
-          "source": "**",
+          "source": "/",
           "destination": "https://propensive.com/",
           "type": 302
+        }
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "function": {
+            "functionId": "installer",
+            "region": "us-central1"
+          }
         }
       ]
     }

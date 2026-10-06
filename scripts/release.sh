@@ -260,6 +260,10 @@ if [[ -n "$LAUNCHER" ]]; then
     XEK_COMMAND=1
     XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
   fi
+  # The installers are written by `xek installer`, which xek 1.2 introduced: an older pin fails
+  # here, before the tag is at risk, rather than after the executables are published.
+  awk -F. '{ exit !($1 > 1 || ($1 == 1 && $2 >= 2)) }' <<< "$xek_version" ||
+    fail "xek $xek_version cannot write the installers; pin xek 1.2.0 or later in etc/xek.tsv"
 fi
 
 # The executable for platform `$2` from the JAR `$1`, written to `$3`.
@@ -584,12 +588,25 @@ else
   gh release upload "$TAG" --repo "$REPO" "$DIST/$NAME" >/dev/null ||
     fail "uploading the dispatcher failed"
 
-  # The installer served from https://propensive.dev/<name>, which redirects to this asset;
-  # it embeds this release's per-platform digests, so it is generated once they are all known.
-  "$PROPENSIVE_SHARED" generate-install.sh "$NAME" "$VERSION" > "$DIST/install.sh" ||
-    fail "generating install.sh failed"
-  gh release upload "$TAG" --repo "$REPO" "$DIST/install.sh" >/dev/null ||
-    fail "uploading install.sh failed"
+  # The installers https://propensive.dev/<name> serves: `install.sh` for `curl | sh` and
+  # `install.ps1` for `irm | iex`, each embedding this release's per-platform digests. They are
+  # computed from the executables here, so first check that GitHub recorded those same digests
+  # for what was uploaded: an installer must refuse a download that differs from what it embeds,
+  # never one that GitHub serves correctly.
+  executables=()
+  for platform in $PLATFORMS; do
+    ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
+    executables+=("$DIST/$NAME-$platform$ext")
+    local_digest=$(shasum -a 256 "$DIST/$NAME-$platform$ext" | cut -d' ' -f1)
+    got=$(awk -F'\t' -v p="$platform" '$1==p{print $3}' "$MANIFEST")
+    [[ "$got" == "$local_digest" ]] ||
+      fail "GitHub's digest '$got' for $NAME-$platform$ext does not match local $local_digest"
+  done
+  XEK_DOWNLOAD=1 dist/xek installer --url "https://github.com/$REPO/releases/download/$TAG" \
+    --release "$VERSION" --out "$DIST" "${executables[@]}" >/dev/null ||
+    fail "generating the installers failed"
+  gh release upload "$TAG" --repo "$REPO" "$DIST/install.sh" "$DIST/install.ps1" >/dev/null ||
+    fail "uploading the installers failed"
 
   NOTES=$(mktemp)
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION" > "$NOTES" || fail "generating the notes failed"
