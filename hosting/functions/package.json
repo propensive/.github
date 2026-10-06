@@ -1,0 +1,12 @@
+{
+  "name": "propensive-dev-installer",
+  "private": true,
+  "description": "Serves each tool's installer from https://propensive.dev/<tool>",
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.0.0"
+  }
+}
