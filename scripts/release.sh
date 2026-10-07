@@ -410,13 +410,18 @@ elif [[ -n "$LAUNCHER" ]]; then
   note "there is no $KEYS/release.pub, so the executables carry no key and cannot upgrade themselves"
 fi
 
+# Every executable published requires Java 25 or later: its launcher runs the `java` it finds
+# only if that is at least JAVA_MINIMUM, and otherwise downloads Java 25.
+JAVA_MINIMUM=25
+
 # The executable for platform `$2` from the JAR `$1`, written to `$3`; with the keys and the build
 # id, when the release is keyed.
 xek_native() {
   local keys=()
   [[ -z "$KEYED" ]] || keys=(--build-id "$BUILD_ID" --public-key "$KEYS/release.pub"
                              --recovery-key "$KEYS/recovery.pub" --app-id "$APP_ID")
-  XEK_DOWNLOAD=1 dist/xek build "${keys[@]}" --platform "$2" "$1" "$3"
+  XEK_DOWNLOAD=1 dist/xek build --java-min "$JAVA_MINIMUM" --java "$JAVA_MINIMUM" "${keys[@]}" \
+    --platform "$2" "$1" "$3"
 }
 
 # Signs the executable `$1` in place, then checks that it verifies, as this application and with

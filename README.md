@@ -224,7 +224,9 @@ draft's asset URLs live under an `untagged-…` path that changes on publication
 dead URLs into them. So the release is made in two steps, exactly as it must be consumed — the
 library jars first, then, once GitHub has indexed their digests, the repackaged executables, the
 polyglot bootstrap and the installer. The script refuses to upload an executable that inlined a
-library instead of referring to the release. Last comes `upgrade.tsv`, the manifest a tool's
+library instead of referring to the release. Every executable requires Java 25 or later
+(`JAVA_MINIMUM` in `release.sh`): its launcher uses an installed `java` only if it is at least
+that, and otherwise downloads Java 25. Last comes `upgrade.tsv`, the manifest a tool's
 `upgrade` reads (see below).
 
 ### Signed executables
