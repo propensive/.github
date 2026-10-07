@@ -1,8 +1,14 @@
-# repository	required status checks, comma-separated
+# repository	required status checks, comma-separated	environments, comma-separated
+#
+# A repository that publishes executables has the `release` environment (environment.json), in
+# which its release job reads the seed that signs them.
 soundness	build
-lira	build
+lira	build	release
 tel	build / build
 xeq	build / build,rust / build
 pyrocosm	build / build
-flame	build / build
-fume	build / build
+flame	build / build	release
+fume	build / build	release
+flair	build / build	release
+fury	build / build	release
+fever	build / build	release

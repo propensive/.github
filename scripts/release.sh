@@ -38,10 +38,23 @@
 # notes without publishing, deleting or uploading anything; PROPAGATE_TOKEN, a token with write
 # access to the repositories named in `etc/downstream`, lets the published release be proposed to
 # them (see propagate.py) — without it, nothing is proposed and the release is unaffected.
+# UPGRADE_SIGNING_SEED, the seed of the release key as 64 hexadecimal digits, signs the
+# executables of a repository with committed keys (see SIGNING below); RELEASE_ALLOW_OLDER=1
+# lets such a release through when its build id is not higher than the latest release's.
 #
 # Requires: `gh`, authenticated with contents write access to the repository.
 
 set -euo pipefail
+
+# The release key's seed is taken out of the environment before anything else runs, so that
+# nothing the release runs — Mill, the compiler and its plugins, `java`, `gh`, a repository's own
+# `verify`, `assemble` and `after` commands — inherits it. From here it lives only in this
+# unexported variable, and reaches `xek` alone, through the environment of that one command; it is
+# never written to disk, passed as an argument, or echoed. The repository's own commands are run
+# in a subshell without it, since `eval` would otherwise let them read it.
+SIGNING_SEED=${UPGRADE_SIGNING_SEED:-}
+unset UPGRADE_SIGNING_SEED
+
 cd "$(git rev-parse --show-toplevel)"
 
 CONFIG=etc/release
@@ -233,7 +246,7 @@ fi
 while read -r command; do
   [[ -z "$command" ]] && continue
   note "gate: $command"
-  eval "$command" || fail "the gate \`$command\` failed"
+  ( unset SIGNING_SEED; eval "$command" ) || fail "the gate \`$command\` failed"
 done < <(config verify)
 
 # A release may depend only on releases: every pin in etc/refs, transitively, must be a published
@@ -261,9 +274,170 @@ if [[ -n "$LAUNCHER" ]]; then
   XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
 fi
 
-# The executable for platform `$2` from the JAR `$1`, written to `$3`.
+# ---------------------------- SIGNING ----------------------------
+#
+# A tool upgrades itself (Pyrocosm's `upgrade`) by staging a newer executable, which the xek
+# launcher swaps in only if it carries a signature that the keys embedded in the RUNNING binary
+# verify. Signing is turned on by committed public keys, each the raw 1312-byte ML-DSA-44 key that
+# `xek keygen` writes:
+#
+#   etc/keys/release.pub    embedded in this release; the key the NEXT release is verified against
+#   etc/keys/recovery.pub   an offline key, also embedded, which may sign any release
+#   etc/keys/signing.pub    only in the one release that rotates the release key: the previous
+#                           release key, which signs this release although it embeds the new one
+#
+# The application id, `propensive/<name>`, and the build id, `major*1000000 + minor*1000 + patch`,
+# are derived, never declared; the application id comes from `name` and not from RELEASE_REPO, so
+# a rehearsal against a fork builds the same bytes. The gates below run before anything is
+# published, so a wrong secret or a careless rotation stops the release while the tag is all
+# there is.
+
+KEYS=etc/keys
+APP_ID="propensive/$NAME"
+KEYED=""          # the executables embed keys and a build id
+SIGNED=""         # and are signed, with the seed of $SIGNING_KEY
+SIGNING_KEY=""
+PREVIOUS_KEY=""   # the latest release's key that this one is signed with, when it had keys
+
+# The build id of the version `$1`; fails for a minor or patch version of 1000 or more, which
+# would collide with the next field.
+build_id() {
+  [[ "$1" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+  (( 10#${BASH_REMATCH[2]} < 1000 && 10#${BASH_REMATCH[3]} < 1000 )) || return 1
+  echo $(( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]} ))
+}
+
+if [[ -n "$LAUNCHER" ]]; then
+  BUILD_ID=$(build_id "$VERSION") ||
+    fail "$VERSION has a minor or patch version of 1000 or more, so it has no build id"
+
+  # The release installed copies are running: GitHub's `latest`, which is also the one whose
+  # manifest their `upgrade` reads. Absent before a first release.
+  PREVIOUS_TAG=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null) || PREVIOUS_TAG=""
+  [[ "$PREVIOUS_TAG" != "$TAG" ]] || PREVIOUS_TAG=""
+fi
+
+if [[ -f "$KEYS/release.pub" ]]; then
+  [[ -n "$LAUNCHER" ]] || fail "$KEYS/release.pub exists, but $CONFIG names no launcher to embed it in"
+  KEYED=1
+
+  # 1. The keys: recovery.pub beside release.pub, and each the size of an ML-DSA-44 public key.
+  [[ -f "$KEYS/recovery.pub" ]] ||
+    fail "$KEYS/release.pub needs $KEYS/recovery.pub beside it; a keyed release embeds both"
+  for key in "$KEYS"/*; do
+    case "$(basename "$key")" in
+      release.pub|recovery.pub|signing.pub) ;;
+      *) fail "$key is not one of release.pub, recovery.pub and signing.pub" ;;
+    esac
+    [[ $(wc -c < "$key" | tr -d ' ') == 1312 ]] ||
+      fail "$key is not a 1312-byte ML-DSA-44 public key, as \`xek keygen\` writes"
+  done
+  SIGNING_KEY=$KEYS/release.pub
+  [[ ! -f "$KEYS/signing.pub" ]] || SIGNING_KEY=$KEYS/signing.pub
+
+  # 2. The builder accepts `--app-id` from 1.1, which the 1.2 gate above already ensures; and
+  # `xek sign` needs the ML-DSA provider of Java 24 or later.
+  java_version=$(java -version 2>&1 | sed -n '1s/[^"]*"\([0-9]*\).*/\1/p')
+  (( ${java_version:-0} >= 24 )) ||
+    fail "signing needs Java 24 or later, and \`java -version\` reports ${java_version:-nothing}"
+
+  # 3. The seed signs with exactly the key this release is expected to be signed with, so that a
+  # wrong or stale secret is caught now, rather than by a launcher refusing the upgrade.
+  if [[ -z "$SIGNING_SEED" ]]; then
+    [[ "$DRY_RUN" == 1 ]] ||
+      fail "$KEYS/release.pub exists, but UPGRADE_SIGNING_SEED is not set; it is the secret of the \`release\` environment"
+    note "dry run: UPGRADE_SIGNING_SEED is not set, so the seed gate is skipped and nothing would be signed"
+  else
+    [[ "$SIGNING_SEED" =~ ^[0-9a-fA-F]{64}$ ]] ||
+      fail "UPGRADE_SIGNING_SEED is not 64 hexadecimal digits"
+    derived=$(mktemp)
+    XEK_SIGN_SEED="$SIGNING_SEED" XEK_DOWNLOAD=1 \
+      dist/xek public-key --key-env XEK_SIGN_SEED --out "$derived" >/dev/null ||
+      fail "could not derive the public key of UPGRADE_SIGNING_SEED"
+    cmp -s "$derived" "$SIGNING_KEY" ||
+      fail "UPGRADE_SIGNING_SEED is not the seed of $SIGNING_KEY; the secret is wrong or stale"
+    SIGNED=1
+    note "UPGRADE_SIGNING_SEED is the seed of $SIGNING_KEY"
+  fi
+
+  # 4. Continuity: the release most users are running must be able to upgrade to this one, so
+  # this release must be signed with a key that release embeds. Without this, a careless
+  # rotation strands everybody silently. The first keyed release has no keyed predecessor.
+  if [[ -n "$PREVIOUS_TAG" ]]; then
+    git cat-file -e "refs/tags/$PREVIOUS_TAG^{commit}" 2>/dev/null ||
+      git fetch -q origin "refs/tags/$PREVIOUS_TAG:refs/tags/$PREVIOUS_TAG" ||
+      fail "could not fetch $PREVIOUS_TAG, the latest release, to read its keys"
+    previous_keys=$(mktemp -d)
+    for key in release recovery; do
+      if git show "refs/tags/$PREVIOUS_TAG:$KEYS/$key.pub" > "$previous_keys/$key.part" 2>/dev/null
+      then mv "$previous_keys/$key.part" "$previous_keys/$key.pub"
+      fi
+    done
+    if [[ -f "$previous_keys/release.pub" ]]; then
+      for key in release recovery; do
+        if [[ -f "$previous_keys/$key.pub" ]] && cmp -s "$previous_keys/$key.pub" "$SIGNING_KEY"; then
+          PREVIOUS_KEY=$previous_keys/$key.pub
+          break
+        fi
+      done
+      if [[ -z "$PREVIOUS_KEY" ]]; then
+        echo "release: $SIGNING_KEY is neither the release key nor the recovery key of $PREVIOUS_TAG," >&2
+        echo "  the latest release, so no installed copy could upgrade to $TAG. To rotate the release" >&2
+        echo "  key, commit the new one as release.pub and the old one as signing.pub, and keep the" >&2
+        echo "  old seed in the environment until this release is out." >&2
+        exit 1
+      fi
+      note "continuity: $PREVIOUS_TAG embeds the key this release is signed with, as its $(basename "$PREVIOUS_KEY")"
+    else
+      note "$PREVIOUS_TAG has no keys, so this is the first keyed release: installed copies cannot upgrade to it, and must be reinstalled"
+    fi
+  fi
+
+  # 5. The build id increases, or no installed copy would accept this release as an upgrade: a
+  # patch release cut for an older line fails here, and should, unless deliberately let through.
+  if [[ -n "$PREVIOUS_TAG" ]] && previous_build=$(build_id "${PREVIOUS_TAG#"$PREFIX"}"); then
+    if (( BUILD_ID <= previous_build )); then
+      [[ "${RELEASE_ALLOW_OLDER:-0}" == 1 ]] ||
+        fail "build $BUILD_ID is not higher than $previous_build, of $PREVIOUS_TAG, the latest release, so no installed copy would accept $TAG as an upgrade; set RELEASE_ALLOW_OLDER=1 to release it anyway"
+      note "RELEASE_ALLOW_OLDER: build $BUILD_ID is not higher than $previous_build, of $PREVIOUS_TAG; no installed copy will upgrade to it"
+    fi
+  fi
+
+  note "keyed: $APP_ID, build $BUILD_ID, signed with $SIGNING_KEY$([[ -n "$SIGNED" ]] || echo ' (not in this dry run)')"
+elif [[ -f "$KEYS/signing.pub" || -f "$KEYS/recovery.pub" ]]; then
+  fail "$KEYS has no release.pub, which every other key there accompanies"
+elif [[ -n "$LAUNCHER" ]]; then
+  note "there is no $KEYS/release.pub, so the executables carry no key and cannot upgrade themselves"
+fi
+
+# The executable for platform `$2` from the JAR `$1`, written to `$3`; with the keys and the build
+# id, when the release is keyed.
 xek_native() {
-  XEK_DOWNLOAD=1 dist/xek build --platform "$2" "$1" "$3"
+  local keys=()
+  [[ -z "$KEYED" ]] || keys=(--build-id "$BUILD_ID" --public-key "$KEYS/release.pub"
+                             --recovery-key "$KEYS/recovery.pub" --app-id "$APP_ID")
+  XEK_DOWNLOAD=1 dist/xek build "${keys[@]}" --platform "$2" "$1" "$3"
+}
+
+# Signs the executable `$1` in place, then checks that it verifies, as this application and with
+# this build id, under the key it was signed with and under the latest release's matching key.
+# The seed reaches `xek sign` alone, through its environment.
+xek_sign() {
+  local foreign=()
+  [[ ! -f "$KEYS/signing.pub" ]] || foreign=(--foreign-key)
+  XEK_SIGN_SEED="$SIGNING_SEED" XEK_DOWNLOAD=1 \
+    dist/xek sign --key-env XEK_SIGN_SEED "${foreign[@]}" --in "$1" --out "$1.signed" >/dev/null ||
+    return 1
+  mv -f "$1.signed" "$1"
+  xek_verify "$1" "$SIGNING_KEY" || return 1
+  [[ -z "$PREVIOUS_KEY" ]] || xek_verify "$1" "$PREVIOUS_KEY"
+}
+
+# Does the executable `$1` verify under the public key `$2`, for this application and build?
+xek_verify() {
+  local build
+  build=$(XEK_DOWNLOAD=1 dist/xek verify --public-key "$2" --app-id "$APP_ID" --in "$1") || return 1
+  [[ "$build" == "$BUILD_ID" ]]
 }
 
 # The dispatcher `$2`, from the manifest `$1` of `label<TAB>url<TAB>sha256` rows.
@@ -328,7 +502,7 @@ if [[ -n "$ASSEMBLE" ]]; then
   export RELEASE_VERSION="$VERSION" RELEASE_TAG="$TAG" RELEASE_ASSETS="$ASSETS_DIR" \
          RELEASE_REPO_NAME="$REPO"
   note "assembling: $ASSEMBLE"
-  eval "$ASSEMBLE" || fail "assembling the release failed"
+  ( unset SIGNING_SEED; eval "$ASSEMBLE" ) || fail "assembling the release failed"
   mapfile -t jars < <(find "$ASSETS_DIR" -maxdepth 1 -type f | sort)
   count=${#jars[@]}
   (( count > 0 )) || fail "\`$ASSEMBLE\` wrote nothing into \$RELEASE_ASSETS"
@@ -557,7 +731,15 @@ else
     ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
     xek_native "$NAME.jar" "$platform" "$DIST/$NAME-$platform$ext" ||
       fail "building the $platform executable failed"
+    # Before upload, so the digests the dispatcher and the installers embed are the signed files'.
+    if [[ -n "$SIGNED" ]]; then
+      xek_sign "$DIST/$NAME-$platform$ext" ||
+        fail "signing or verifying the $platform executable failed; not uploading the executables"
+    fi
   done
+  if [[ -n "$SIGNED" ]]; then
+    note "signed every executable as $APP_ID, build $BUILD_ID, and verified each"
+  fi
   gh release upload "$TAG" --repo "$REPO" "$DIST"/"$NAME"-* >/dev/null ||
     fail "uploading the executables failed"
 
@@ -597,6 +779,23 @@ else
   gh release upload "$TAG" --repo "$REPO" "$DIST/install.sh" "$DIST/install.ps1" >/dev/null ||
     fail "uploading the installers failed"
 
+  # The upgrade manifest, which a tool fetches from `releases/latest/download/upgrade.tsv` — no
+  # API call, and so no rate limit — to learn of a newer release. It is not signed and need not
+  # be: the executable it names is verified by the launcher of the RUNNING binary, so a forged
+  # manifest can make an upgrade fail, but never make a bad one succeed. `signed-by` is the
+  # SHA-256 of the key the executables were signed with, so that a tool can tell after a rotation
+  # that it must upgrade through the bridging release; it is empty for an unkeyed release, whose
+  # manifest is published all the same, so that tools can check before their first keyed release.
+  signed_by=""
+  if [[ -n "$SIGNED" ]]; then
+    signed_by=$(shasum -a 256 "$SIGNING_KEY" | cut -d' ' -f1)
+  fi
+  { printf 'version\t%s\nbuild\t%s\nsigned-by\t%s\n' "$VERSION" "$BUILD_ID" "$signed_by"
+    cat "$MANIFEST"
+  } > "$DIST/upgrade.tsv"
+  gh release upload "$TAG" --repo "$REPO" "$DIST/upgrade.tsv" >/dev/null ||
+    fail "uploading the upgrade manifest failed"
+
   NOTES=$(mktemp)
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION" > "$NOTES" || fail "generating the notes failed"
   [[ -s "$NOTES" ]] || fail "the generated notes are empty"
@@ -613,7 +812,8 @@ note "$TAG published to https://github.com/$REPO/releases/tag/$TAG ($count asset
 while read -r command; do
   [[ -z "$command" ]] && continue
   note "after: $command"
-  eval "$command" || note "\`$command\` failed; the release is published, so finish that by hand"
+  ( unset SIGNING_SEED; eval "$command" ) ||
+    note "\`$command\` failed; the release is published, so finish that by hand"
 done < <(config after)
 
 # Propose the release to the repositories that consume it, one draft pull request each. This runs

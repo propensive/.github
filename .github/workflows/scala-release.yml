@@ -12,6 +12,13 @@ name: Scala Release
 # grant `permissions: contents: write` — the organisation default is read-only, and a release
 # writes assets and the release itself, and on failure deletes the tag it was triggered by. A
 # caller with an `etc/downstream` also passes `secrets: inherit`, for PROPAGATE_TOKEN below.
+#
+# A caller that signs its executables (committed `etc/keys/release.pub`) passes
+# `environment: release`, the GitHub environment holding the release key's seed as the secret
+# UPGRADE_SIGNING_SEED. It is an environment secret, not a repository secret: a repository secret
+# can be read by any workflow on any branch, whereas the environment admits only the release tags
+# and waits for a reviewer's approval. The job below names the environment itself, and so reads
+# the secret from the CALLER's environment; it cannot be passed by the caller.
 
 on:
   workflow_call:
@@ -20,6 +27,11 @@ on:
         description: Job timeout in minutes
         type: number
         default: 90
+      # The caller's environment the release job runs in; none by default.
+      environment:
+        description: The environment holding UPGRADE_SIGNING_SEED, for a signed release
+        type: string
+        default: ''
     # Optional. A token with contents and pull-requests write access to the repositories named in
     # the caller's `etc/downstream`, to which the published release is proposed as draft pull
     # requests (scripts/propagate.py); the job's own token reaches no other repository. A caller
@@ -28,11 +40,18 @@ on:
     secrets:
       PROPAGATE_TOKEN:
         required: false
+      # Declared so that the step below may name it; it is read from the environment the job runs
+      # in, which takes precedence over anything a caller passes. Keep it there, and never as a
+      # repository secret, which any workflow on any branch could read.
+      UPGRADE_SIGNING_SEED:
+        required: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout }}
+    # An empty name runs the job in no environment, as before.
+    environment: ${{ inputs.environment }}
     steps:
       # The tag, and the whole history: release.sh needs the previous release tag to assemble the
       # changelog, and Soundness's attestation gate recomputes the filtered tree of the commit.
@@ -85,4 +104,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PROPAGATE_TOKEN: ${{ secrets.PROPAGATE_TOKEN }}
+          # Only in this step, and release.sh unsets it before running anything else.
+          UPGRADE_SIGNING_SEED: ${{ secrets.UPGRADE_SIGNING_SEED }}
         run: ./etc/shared release.sh
