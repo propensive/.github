@@ -14,11 +14,13 @@ name: Scala Release
 # caller with an `etc/downstream` also passes `secrets: inherit`, for PROPAGATE_TOKEN below.
 #
 # A caller that signs its executables (committed `etc/keys/release.pub`) passes
-# `environment: release`, the GitHub environment holding the release key's seed as the secret
+# `environment: release` and `secrets: inherit`; `release` is the GitHub environment holding
+# the release key's seed as the secret
 # UPGRADE_SIGNING_SEED. It is an environment secret, not a repository secret: a repository secret
 # can be read by any workflow on any branch, whereas the environment admits only the release tags
-# and waits for a reviewer's approval. The job below names the environment itself, and so reads
-# the secret from the CALLER's environment; it cannot be passed by the caller.
+# and waits for a reviewer's approval. The job below names the environment itself, so the secret
+# is the CALLER's environment's; but a called workflow sees only the secrets its caller passes,
+# even those of that environment, so without `secrets: inherit` the seed arrives empty.
 
 on:
   workflow_call:
@@ -40,9 +42,9 @@ on:
     secrets:
       PROPAGATE_TOKEN:
         required: false
-      # Declared so that the step below may name it; it is read from the environment the job runs
-      # in, which takes precedence over anything a caller passes. Keep it there, and never as a
-      # repository secret, which any workflow on any branch could read.
+      # Declared so that the step below may name it; it is the secret of the environment the job
+      # runs in, and reaches the job only when the caller passes `secrets: inherit`. Keep it there,
+      # and never as a repository secret, which any workflow on any branch could read.
       UPGRADE_SIGNING_SEED:
         required: false
 

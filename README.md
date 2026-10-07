@@ -291,7 +291,9 @@ bin/release-key fume ~/work/fume recovery.pub       # the seed to GitHub, the ke
 ```
 
 and commit `etc/keys/release.pub` and `etc/keys/recovery.pub`. The tool's
-`.github/workflows/release.yml` passes `with: environment: release`; each release then waits for
+`.github/workflows/release.yml` passes `with: environment: release` and `secrets: inherit`,
+since a called workflow sees no secret its caller does not pass, even its environment's; each
+release then waits for
 the reviewer's approval before it runs. The first keyed release cannot be reached by upgrade,
 since installed copies have no key: they are replaced by reinstalling, once.
 
