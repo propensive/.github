@@ -246,40 +246,29 @@ done < <(config verify)
 # The `xek` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
 #
-# Which builder that is, the pin in etc/xek.tsv decides. From xek 0.10 it is the `xek` command —
-# an XEK executable itself, run on a JVM its launcher finds, or downloads where none is suitable
-# (`XEK_DOWNLOAD`) — with a conventional command line; up to 0.9 it was a shell script of
-# subcommands. `xek_native` and `xek_dispatch` speak whichever the pin names, so a repository
-# moves between the two by changing its pin alone. The new builder is run once here, so that a
-# builder which cannot run fails the release before anything is published.
-XEK_COMMAND=""
+# Which builder that is, the pin in etc/xek.tsv decides: the `xek` command, an XEK executable
+# itself, run on a JVM its launcher finds, or downloads where none is suitable (`XEK_DOWNLOAD`).
+# The installers are written by `xek installer`, which xek 1.2 introduced, so that is the oldest
+# pin accepted; an older one fails here, before the tag is at risk, rather than after the
+# executables are published. Every command line from xek 1.1 begins with a subcommand, and those
+# below are written for that. The builder is run once here, so that one which cannot run fails
+# the release before anything is published.
 if [[ -n "$LAUNCHER" ]]; then
   "$PROPENSIVE_SHARED" xek-fetch.sh
   xek_version=$(awk -F'\t' '$1=="version"{print $2}' etc/xek.tsv)
-  if awk -F. '{ exit !($1 > 0 || $2 >= 10) }' <<< "$xek_version"; then
-    XEK_COMMAND=1
-    XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
-  fi
-  # The installers are written by `xek installer`, which xek 1.2 introduced: an older pin fails
-  # here, before the tag is at risk, rather than after the executables are published.
   awk -F. '{ exit !($1 > 1 || ($1 == 1 && $2 >= 2)) }' <<< "$xek_version" ||
     fail "xek $xek_version cannot write the installers; pin xek 1.2.0 or later in etc/xek.tsv"
+  XEK_DOWNLOAD=1 dist/xek --version || fail "the xek $xek_version builder did not run"
 fi
 
 # The executable for platform `$2` from the JAR `$1`, written to `$3`.
 xek_native() {
-  if [[ -n "$XEK_COMMAND" ]]
-  then XEK_DOWNLOAD=1 dist/xek --platform "$2" "$1" "$3"
-  else dist/xek build --jar "$1" --out "$3" --target "$2"
-  fi
+  XEK_DOWNLOAD=1 dist/xek build --platform "$2" "$1" "$3"
 }
 
 # The dispatcher `$2`, from the manifest `$1` of `label<TAB>url<TAB>sha256` rows.
 xek_dispatch() {
-  if [[ -n "$XEK_COMMAND" ]]
-  then XEK_DOWNLOAD=1 dist/xek --dispatch "$1" "$2"
-  else dist/xek dispatch --out "$2" --manifest "$1"
-  fi
+  XEK_DOWNLOAD=1 dist/xek build --dispatch "$1" "$2"
 }
 
 # ---------------------------- ROLLBACK ----------------------------
