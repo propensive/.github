@@ -1,0 +1,13 @@
+{
+  "name": "release",
+  "wait_timer": 0,
+  "prevent_self_review": false,
+  "reviewers": ["propensive"],
+  "deployment_branch_policy": {
+    "protected_branches": false,
+    "custom_branch_policies": true
+  },
+  "tags": ["[0-9]*.[0-9]*.[0-9]*"],
+  "secret": "UPGRADE_SIGNING_SEED",
+  "keys": "etc/keys/release.pub"
+}

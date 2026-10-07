@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# Give a repository the release key that signs its executables.
+#
+#   bin/release-key <repository> <checkout> <recovery.pub>
+#
+# Generates a fresh ML-DSA-44 key pair with `xek keygen`, stores its seed as the secret
+# UPGRADE_SIGNING_SEED of the `release` environment of propensive/<repository>, and writes the
+# public key to <checkout>/etc/keys/release.pub, beside a copy of <recovery.pub> as
+# etc/keys/recovery.pub. Commit those two files; the next release is then signed.
+#
+# The seed exists only in a private temporary directory while this runs, and goes to GitHub
+# through `gh`'s standard input: it is never printed, passed as an argument, or kept. GitHub is
+# then its only home, which is the design — a lost or leaked release key is replaced by a release
+# signed with the recovery key, whose seed is never here at all (README.md, "Signed executables").
+#
+# Run `bin/settings apply <repository>` first, so that the environment exists and admits only
+# release tags; this refuses to run otherwise, and refuses to replace an existing key, since a new
+# key in place of an old one is a rotation, which takes a release of its own.
+#
+# Requires `xek` 1.1.0 or later (or XEK=/path/to/xek), Java 24 or later, and `gh` authenticated
+# as a repository admin.
+
+set -euo pipefail
+
+[[ $# -eq 3 ]] || { echo "usage: bin/release-key <repository> <checkout> <recovery.pub>" >&2; exit 1; }
+REPOSITORY=$1
+CHECKOUT=$2
+RECOVERY=$3
+REPO=propensive/$REPOSITORY
+XEK=${XEK:-xek}
+
+fail() { echo "release-key: $1" >&2; exit 1; }
+
+[[ -f "$RECOVERY" && $(wc -c < "$RECOVERY" | tr -d ' ') == 1312 ]] ||
+  fail "$RECOVERY is not a 1312-byte public key, as \`xek keygen\` writes"
+[[ -d "$CHECKOUT/.git" || -f "$CHECKOUT/.git" ]] || fail "$CHECKOUT is not a git checkout"
+[[ ! -e "$CHECKOUT/etc/keys/release.pub" ]] ||
+  fail "$CHECKOUT/etc/keys/release.pub exists; replacing it is a rotation (README.md, \"Rotating the release key\")"
+gh api "repos/$REPO/environments/release" >/dev/null 2>&1 ||
+  fail "$REPO has no \`release\` environment; run \`bin/settings apply $REPOSITORY\` first"
+
+umask 077
+WORK=$(mktemp -d)
+trap 'rm -rf -- "$WORK"' EXIT
+
+"$XEK" keygen --out "$WORK/release" >/dev/null || fail "\`$XEK keygen\` failed"
+[[ $(wc -c < "$WORK/release.seed" | tr -d ' ') == 32 ]] || fail "the generated seed is not 32 bytes"
+
+od -An -tx1 "$WORK/release.seed" | tr -d ' \n' |
+  gh secret set UPGRADE_SIGNING_SEED --env release --repo "$REPO" ||
+  fail "could not store the seed in the \`release\` environment of $REPO"
+
+mkdir -p "$CHECKOUT/etc/keys"
+cp "$WORK/release.pub" "$CHECKOUT/etc/keys/release.pub"
+cp "$RECOVERY" "$CHECKOUT/etc/keys/recovery.pub"
+echo "release-key: stored the seed in $REPO's \`release\` environment, and wrote" >&2
+echo "  $CHECKOUT/etc/keys/release.pub and recovery.pub; commit them, and the next release is signed" >&2

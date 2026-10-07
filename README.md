@@ -158,7 +158,9 @@ one substantive difference from the three scripts this replaced. The calling job
 - the migration notes, where the repository keeps them, exist for this version, and no other
   version's notes are unreleased;
 - every `verify` command in `etc/release` passes;
-- `deps.py check`: every pin, transitively, is a published release.
+- `deps.py check`: every pin, transitively, is a published release;
+- for an application with committed keys, the five signing gates (see
+  [Signed executables](#signed-executables)).
 
 If anything fails after that, the release **and the tag** are deleted from origin, so the retry
 is `git tag -d 1.2.3 && git tag -s 1.2.3 && git push --tags` once the cause is fixed.
@@ -222,7 +224,90 @@ draft's asset URLs live under an `untagged-…` path that changes on publication
 dead URLs into them. So the release is made in two steps, exactly as it must be consumed — the
 library jars first, then, once GitHub has indexed their digests, the repackaged executables, the
 polyglot bootstrap and the installer. The script refuses to upload an executable that inlined a
-library instead of referring to the release.
+library instead of referring to the release. Every executable requires Java 25 or later
+(`JAVA_MINIMUM` in `release.sh`): its launcher uses an installed `java` only if it is at least
+that, and otherwise downloads Java 25. Last comes `upgrade.tsv`, the manifest a tool's
+`upgrade` reads (see below).
+
+### Signed executables
+
+Every Pyrocosm tool has an `upgrade` subcommand: it downloads a newer release and stages it, and
+the xek launcher swaps it in only if it carries a signature that the keys embedded in the
+*running* binary verify. A release signs its executables when the repository has committed keys,
+each the raw 1312-byte ML-DSA-44 public key `xek keygen` writes:
+
+| file | what it is |
+|---|---|
+| `etc/keys/release.pub` | embedded in this release; the key the *next* release is verified against |
+| `etc/keys/recovery.pub` | an offline key, also embedded, which may sign any release; required beside `release.pub` |
+| `etc/keys/signing.pub` | only in the one release that rotates the release key: the old key, which signs it |
+
+The application id, `propensive/<name>`, and the build id, `major × 1000000 + minor × 1000 +
+patch`, are derived. The release key's seed is the secret `UPGRADE_SIGNING_SEED` of the
+repository's `release` environment, and nowhere else: `release.sh` takes it out of its
+environment before running anything, and hands it only to `xek sign`. An application without
+keys is built as before, with a note that its executables cannot upgrade themselves.
+
+Before anything is published, a keyed release checks that:
+
+1. `recovery.pub` is beside `release.pub`, and every key is 1312 bytes;
+2. the builder is xek 1.2.0 or later, and `java` is 24 or later, which `xek sign` needs;
+3. the seed is set, and is the seed of `signing.pub` if it exists, or of `release.pub`;
+4. the key it signs with is the release key or the recovery key of the latest release, if that
+   had keys — so the release most users are running can upgrade to it;
+5. its build id is higher than the latest release's, unless `RELEASE_ALLOW_OLDER=1`.
+
+Each executable is built with the keys, the build id and the application id, signed, and
+verified under the key it was signed with and the latest release's matching key, all before
+upload; so the digests in the dispatcher and the installers are those of the signed files.
+
+`upgrade.tsv`, attached to every application release, keyed or not, is what a tool reads from
+`releases/latest/download/upgrade.tsv`:
+
+```
+version	1.2.0
+build	1002000
+signed-by	<SHA-256 of the key the executables were signed with; empty when unsigned>
+linux-x64	<url>	<sha256>
+…
+```
+
+It is not signed, and need not be: the launcher verifies the executable it names, so a forged
+manifest can make an upgrade fail but never make a bad one succeed.
+
+**Setting up a repository.** Once, on a machine that is not a CI runner, make the recovery key
+and keep its seed offline; one recovery key may serve every tool, since the application id keeps
+their upgrades apart:
+
+```sh
+xek keygen --out recovery       # keep recovery.seed offline; recovery.pub is public
+```
+
+Then, for each tool, add it to `settings/repos.tsv` with the `release` environment, and:
+
+```sh
+bin/settings apply fume                              # the environment: X.Y.Z tags, a reviewer
+bin/release-key fume ~/work/fume recovery.pub       # the seed to GitHub, the keys to etc/keys
+```
+
+and commit `etc/keys/release.pub` and `etc/keys/recovery.pub`. The tool's
+`.github/workflows/release.yml` passes `with: environment: release`; each release then waits for
+the reviewer's approval before it runs. The first keyed release cannot be reached by upgrade,
+since installed copies have no key: they are replaced by reinstalling, once.
+
+**The recovery key** is used only by hand, with `xek statement` and `xek attach`, to sign a
+release when the release key is lost or leaked; its seed never touches GitHub.
+
+**Rotating the release key.** Generate the new pair. In one release, commit the new key as
+`release.pub` and the old one as `signing.pub`, leaving the old seed in the environment. After
+that release, replace the secret with the new seed and delete `signing.pub`. Users more than one
+rotation behind upgrade through the bridging release.
+
+**What the signature protects.** It protects users from a tampered asset, mirror or connection,
+and from anyone who can write a release without being able to run the release workflow in its
+environment. It does not protect against a takeover of the GitHub account, which is why the
+recovery key exists, and why the release key can later move to a KMS without a change of format
+(`xek statement` and `xek attach`).
 
 ### Proposing a release to its consumers: `etc/downstream`
 

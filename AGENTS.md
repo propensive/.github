@@ -26,3 +26,8 @@ free of cycles). Rules for changing them:
    gates in the phase that runs *before* the rollback trap is armed: a gate that fails after it
    deletes a tag that was never the problem. `scripts/release_notes.py` can be run by hand
    against an already-published version.
+6. The release key's seed, `UPGRADE_SIGNING_SEED`, is read once at the top of `release.sh`,
+   unset, and handed only to `xek` through the environment of that one command. Never echo it,
+   write it to a file, pass it as an argument, or let a command the script `eval`s see it; and
+   never handle a recovery seed at all, which lives offline. Rehearse signing with throwaway
+   keys from `xek keygen`.

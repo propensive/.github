@@ -8,8 +8,15 @@
 # The settings are data in settings/: `repository.json` (repository flags, secret scanning, the
 # Actions token's default permissions, and the community files a repository should inherit from
 # this one rather than carry itself), `ruleset.json` (the `rules` ruleset protecting `main`, as
-# Soundness first defined it) and `repos.tsv` (which repositories, and the status checks each
-# one's ruleset requires, since the check names depend on how each repository runs its CI).
+# Soundness first defined it), `environment.json` (the `release` environment, in which a
+# repository's release job reads the seed that signs its executables) and `repos.tsv` (which
+# repositories, the status checks each one's ruleset requires, since the check names depend on
+# how each repository runs its CI, and whether it has the `release` environment).
+#
+# The environment admits only jobs for tags of the form X.Y.Z, and waits for a reviewer's
+# approval. Its secret, UPGRADE_SIGNING_SEED, is never set here: `check` reports it missing from a
+# repository that has committed `etc/keys/release.pub`, and the seed is stored by hand (README.md,
+# "Signed executables").
 #
 # `propensive` is a personal account, so there are no account-level rulesets to inherit: the
 # ruleset is copied into each repository. Requires `gh`, authenticated as a repository admin.
@@ -35,8 +42,9 @@ def repositories(selected):
   table = {}
   for line in (ROOT / "repos.tsv").read_text().splitlines():
     if line.strip() and not line.startswith("#"):
-      name, checks = line.split("\t")
-      table[name] = [check.strip() for check in checks.split(",")]
+      name, checks, *rest = line.split("\t")
+      environments = [env.strip() for env in rest[0].split(",") if env.strip()] if rest else []
+      table[name] = ([check.strip() for check in checks.split(",")], environments)
   unknown = [name for name in selected if name not in table]
   if unknown: sys.exit(f"not in settings/repos.tsv: {', '.join(unknown)}")
   return {name: table[name] for name in (selected or table)}
@@ -70,6 +78,63 @@ def differences(wanted, actual, path=""):
     return []
   return [] if wanted == actual else [f"{path}: expected {wanted!r}, found {actual!r}"]
 
+def user_id(login):
+  return gh(f"users/{login}")["id"]
+
+# The environment as the API takes it, and as `check` compares it.
+def environment_body(environment):
+  return {
+    "wait_timer": environment["wait_timer"],
+    "prevent_self_review": environment["prevent_self_review"],
+    "reviewers": [{"type": "User", "id": user_id(login)} for login in environment["reviewers"]],
+    "deployment_branch_policy": environment["deployment_branch_policy"],
+  }
+
+def tag_policies(repo, name):
+  found = gh(f"repos/{OWNER}/{repo}/environments/{name}/deployment-branch-policies") or {}
+  return found.get("branch_policies", [])
+
+def check_environment(repo, environment):
+  name = environment["name"]
+  current = gh(f"repos/{OWNER}/{repo}/environments/{name}", allow_missing=True)
+  if current is None: return [f"environment: no `{name}` environment"]
+  problems = []
+  rules = {rule["type"]: rule for rule in current.get("protection_rules", [])}
+  reviewers = sorted(reviewer["reviewer"]["login"]
+                     for reviewer in rules.get("required_reviewers", {}).get("reviewers", []))
+  if reviewers != sorted(environment["reviewers"]):
+    problems.append(f"environment: reviewers are {reviewers}, not {environment['reviewers']}")
+  if rules.get("required_reviewers", {}).get("prevent_self_review", False) != environment["prevent_self_review"]:
+    problems.append("environment: prevent_self_review differs")
+  if rules.get("wait_timer", {}).get("wait_timer", 0) != environment["wait_timer"]:
+    problems.append("environment: wait_timer differs")
+  problems += differences(environment["deployment_branch_policy"],
+                          current.get("deployment_branch_policy"), "environment.deployment_branch_policy")
+  policies = sorted((policy["name"], policy.get("type", "branch")) for policy in tag_policies(repo, name))
+  wanted = sorted((tag, "tag") for tag in environment["tags"])
+  if policies != wanted: problems.append(f"environment: deployment policies are {policies}, not {wanted}")
+  keyed = gh(f"repos/{OWNER}/{repo}/contents/{environment['keys']}", allow_missing=True) is not None
+  secret = gh(f"repos/{OWNER}/{repo}/environments/{name}/secrets/{environment['secret']}",
+              allow_missing=True)
+  if keyed and secret is None:
+    problems.append(f"environment: {environment['keys']} is committed, but `{name}` has no {environment['secret']}")
+  if gh(f"repos/{OWNER}/{repo}/actions/secrets/{environment['secret']}", allow_missing=True) is not None:
+    problems.append(f"secrets: {environment['secret']} is a repository secret; it belongs to `{name}` alone")
+  return problems
+
+def apply_environment(repo, environment):
+  name = environment["name"]
+  gh("-X", "PUT", f"repos/{OWNER}/{repo}/environments/{name}", body=environment_body(environment))
+  existing = {(policy["name"], policy.get("type", "branch")): policy["id"]
+              for policy in tag_policies(repo, name)}
+  wanted = {(tag, "tag") for tag in environment["tags"]}
+  for policy, number in existing.items():
+    if policy not in wanted:
+      gh("-X", "DELETE", f"repos/{OWNER}/{repo}/environments/{name}/deployment-branch-policies/{number}")
+  for tag, kind in wanted - existing.keys():
+    gh("-X", "POST", f"repos/{OWNER}/{repo}/environments/{name}/deployment-branch-policies",
+       body={"name": tag, "type": kind})
+
 def rules_of(repo):
   summaries = gh(f"repos/{OWNER}/{repo}/rulesets") or []
   named = [ruleset for ruleset in summaries if ruleset["name"] == "rules"]
@@ -77,7 +142,7 @@ def rules_of(repo):
   current = gh(f"repos/{OWNER}/{repo}/rulesets/{named[0]['id']}") if named else None
   return current, others
 
-def check(repo, checks, settings):
+def check(repo, checks, environments, settings, environment):
   problems = []
   details = gh(f"repos/{OWNER}/{repo}")
   problems += differences(settings["repository"], details, "repository")
@@ -92,9 +157,12 @@ def check(repo, checks, settings):
   for path in settings["shared_files"]:
     if gh(f"repos/{OWNER}/{repo}/contents/{path}", allow_missing=True) is not None:
       problems.append(f"files: {path} overrides the shared copy in {OWNER}/.github")
+  for name in environments:
+    if name != environment["name"]: sys.exit(f"{repo}: unknown environment `{name}` in repos.tsv")
+    problems += check_environment(repo, environment)
   return problems
 
-def apply(repo, checks, settings):
+def apply(repo, checks, environments, settings, environment):
   security = {key: {"status": value} for key, value in settings["security_and_analysis"].items()}
   gh("-X", "PATCH", f"repos/{OWNER}/{repo}",
      body={**settings["repository"], "security_and_analysis": security})
@@ -103,17 +171,21 @@ def apply(repo, checks, settings):
   current, _ = rules_of(repo)
   if current is None: gh("-X", "POST", f"repos/{OWNER}/{repo}/rulesets", body=ruleset(checks))
   else: gh("-X", "PUT", f"repos/{OWNER}/{repo}/rulesets/{current['id']}", body=ruleset(checks))
+  for name in environments:
+    if name != environment["name"]: sys.exit(f"{repo}: unknown environment `{name}` in repos.tsv")
+    apply_environment(repo, environment)
 
 def main():
   if len(sys.argv) < 2 or sys.argv[1] not in ("check", "apply"):
     sys.exit("usage: bin/settings check|apply [repo…]")
   settings = json.loads((ROOT / "repository.json").read_text())
+  environment = json.loads((ROOT / "environment.json").read_text())
   failed = False
-  for repo, checks in repositories(sys.argv[2:]).items():
+  for repo, (checks, environments) in repositories(sys.argv[2:]).items():
     if sys.argv[1] == "apply":
-      apply(repo, checks, settings)
+      apply(repo, checks, environments, settings, environment)
       print(f"{repo}: applied")
-    problems = check(repo, checks, settings)
+    problems = check(repo, checks, environments, settings, environment)
     failed = failed or bool(problems)
     print(f"{repo}: {len(problems) or 'no'} difference{'' if len(problems) == 1 else 's'}")
     for problem in problems: print(f"  {problem}")
