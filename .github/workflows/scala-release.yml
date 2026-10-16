@@ -102,10 +102,14 @@ jobs:
 
       # The tag name is the version; release.sh reads it from GITHUB_REF_NAME. The token lifts
       # the API rate limit for deps.py and authenticates `gh` for everything else.
+      # RELEASE_ALLOW_SNAPSHOTS is the caller's repository variable of that name (`gh variable set
+      # RELEASE_ALLOW_SNAPSHOTS --body 1`), unset by default: set deliberately, to release while a
+      # pin is still a snapshot, and unset again once the release is pinned.
       - name: Publish the release
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PROPAGATE_TOKEN: ${{ secrets.PROPAGATE_TOKEN }}
+          RELEASE_ALLOW_SNAPSHOTS: ${{ vars.RELEASE_ALLOW_SNAPSHOTS }}
           # Only in this step, and release.sh unsets it before running anything else.
           UPGRADE_SIGNING_SEED: ${{ secrets.UPGRADE_SIGNING_SEED }}
         run: ./etc/shared release.sh

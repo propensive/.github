@@ -34,8 +34,9 @@ on:
         type: string
         default: ""
       test_main:
-        description: Ignored. Tests are run by fume, not by a main class; the input remains
-          declared so a caller that still passes it does not fail at startup
+        description: A main class in the test assembly to run the suites with, under plain
+          `java`, in place of fume — for a repository whose pinned fume cannot run (as when
+          fume itself is being rebuilt); empty, the default, runs them through fume
         type: string
         default: ""
       timeout:
@@ -118,10 +119,16 @@ jobs:
       # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar. fume
       # discovers every suite in it from the META-INF/services/probably.Suite index, renders
       # tersely under GitHub Actions, and exits 1 when a test fails — the same runner and the
-      # same output as `make test` locally.
+      # same output as `make test` locally. With `test_main`, the suites run under plain `java`
+      # through that class instead (one line per test; the exit status is the suite's), for a
+      # repository whose pinned fume cannot run here.
       - name: Run the tests
         if: inputs.test_assembly != ''
         run: |
           ./mill ${{ inputs.test_assembly }}
           jar="out/$(echo "${{ inputs.test_assembly }}" | tr '.' '/').dest/out.jar"
-          fume run -c "$jar"
+          if [ -n "${{ inputs.test_main }}" ]; then
+            java -cp "$jar" "${{ inputs.test_main }}"
+          else
+            fume run -c "$jar"
+          fi

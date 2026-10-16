@@ -97,7 +97,10 @@ simply named in both files, by their respective consumers.
    for a snapshot not yet on GitHub, builds it from the sibling checkout named by the commit);
    CI does the same on the PR, which can now merge.
 3. When the upstream is released, replace the pin with the release. A release refuses to run
-   while any pin, transitively, is a snapshot (`deps.py check`).
+   while any pin, transitively, is a snapshot (`deps.py check`) — unless the repository
+   variable `RELEASE_ALLOW_SNAPSHOTS` is `1`, which admits a *published* snapshot pin, for
+   breaking a cycle in which two repositories can each be released only after the other. Set
+   it deliberately, name the debt in the release notes, and unset it once the release is pinned.
 4. `make snapshot-prune` in the upstream, occasionally.
 
 The repository's own version stays a plain `val <name>Version = "X.Y.Z"` in `build.mill`;
@@ -158,7 +161,8 @@ one substantive difference from the three scripts this replaced. The calling job
 - the migration notes, where the repository keeps them, exist for this version, and no other
   version's notes are unreleased;
 - every `verify` command in `etc/release` passes;
-- `deps.py check`: every pin, transitively, is a published release;
+- `deps.py check`: every pin, transitively, is a published release (or, under
+  `RELEASE_ALLOW_SNAPSHOTS=1`, a published snapshot);
 - for an application with committed keys, the five signing gates (see
   [Signed executables](#signed-executables)).
 
