@@ -186,9 +186,13 @@ def release_exists(pin: Pin) -> bool:
 
 def main(arguments: list[str]) -> int:
     if not arguments:
-        print("usage: deps.py {walk|check} [file] | kind <version>", file=sys.stderr)
+        print("usage: deps.py {walk|check [--allow-snapshots]} [file] | kind <version>", file=sys.stderr)
         return 2
     command = arguments[0]
+    # `check --allow-snapshots`: a snapshot pin is reported rather than failing the check, so
+    # long as its pre-release is published; release.sh passes it under RELEASE_ALLOW_SNAPSHOTS=1.
+    allow_snapshots = "--allow-snapshots" in arguments
+    arguments = [argument for argument in arguments if argument != "--allow-snapshots"]
 
     if command == "kind":
         if len(arguments) != 2:
@@ -217,8 +221,17 @@ def main(arguments: list[str]) -> int:
         return 0
 
     if command == "check":
-        problems = [f"{pin.repo} is pinned at the snapshot {pin.version}; release it first"
-                    for pin in closure if pin.kind == "snapshot"]
+        snapshots = [pin for pin in closure if pin.kind == "snapshot"]
+        if allow_snapshots:
+            for pin in snapshots:
+                print(f"deps: {pin.repo} is pinned at the snapshot {pin.version}, allowed by "
+                      f"RELEASE_ALLOW_SNAPSHOTS; release it, and pin the release, once it exists",
+                      file=sys.stderr)
+            problems = [f"{pin.repo} has no published snapshot {pin.version} ({pin.tag})"
+                        for pin in snapshots if not release_exists(pin)]
+        else:
+            problems = [f"{pin.repo} is pinned at the snapshot {pin.version}; release it first"
+                        for pin in snapshots]
         problems += [f"{pin.repo} has no published release {pin.version}"
                      for pin in closure if pin.kind == "release" and not release_exists(pin)]
         problems += [f"tool {pin.repo} has no published release {pin.version}"
@@ -227,8 +240,12 @@ def main(arguments: list[str]) -> int:
             print(f"deps: {problem}", file=sys.stderr)
         if problems:
             return 1
-        print(f"deps: every pin is a published release ({len(closure)} in the closure, "
-              f"{len(tools)} tools)")
+        if snapshots:
+            print(f"deps: every pin is published ({len(closure)} in the closure, "
+                  f"{len(snapshots)} of them snapshots, {len(tools)} tools)")
+        else:
+            print(f"deps: every pin is a published release ({len(closure)} in the closure, "
+                  f"{len(tools)} tools)")
         return 0
 
     fail(f"unknown command {command}")

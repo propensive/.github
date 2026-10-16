@@ -40,7 +40,10 @@
 # them (see propagate.py) — without it, nothing is proposed and the release is unaffected.
 # UPGRADE_SIGNING_SEED, the seed of the release key as 64 hexadecimal digits, signs the
 # executables of a repository with committed keys (see SIGNING below); RELEASE_ALLOW_OLDER=1
-# lets such a release through when its build id is not higher than the latest release's.
+# lets such a release through when its build id is not higher than the latest release's;
+# RELEASE_ALLOW_SNAPSHOTS=1 lets one through while a pin in etc/refs is still a snapshot (a
+# published one), for breaking a cycle in which two repositories can each be released only after
+# the other — a debt the release notes should name, paid by pinning the release once it exists.
 #
 # Requires: `gh`, authenticated with contents write access to the repository.
 
@@ -252,8 +255,14 @@ done < <(config verify)
 # A release may depend only on releases: every pin in etc/refs, transitively, must be a published
 # X.Y.Z, and every tool in etc/tools a published release. Then install exactly those, so the
 # build compiles against the released jars and not against an earlier snapshot under the same
-# version.
-"$PROPENSIVE_SHARED" deps.py check
+# version. RELEASE_ALLOW_SNAPSHOTS=1 admits a published snapshot pin, for breaking a release
+# cycle; the check still refuses a pin nobody has published.
+if [[ "${RELEASE_ALLOW_SNAPSHOTS:-0}" == 1 ]]; then
+  note "RELEASE_ALLOW_SNAPSHOTS: a snapshot pin in etc/refs is allowed; release it, and pin the release, once it exists"
+  "$PROPENSIVE_SHARED" deps.py check --allow-snapshots
+else
+  "$PROPENSIVE_SHARED" deps.py check
+fi
 [[ -n "$ASSEMBLE" ]] || "$PROPENSIVE_SHARED" sync-deps.sh
 
 # The `xek` builder packages the executables. Fetch and verify it before anything is published,
