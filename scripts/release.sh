@@ -17,7 +17,7 @@
 # aligned), `#` for comments:
 #
 #   name       the repository and application name; `propensive/<name>`, and <NAME>_RELEASE_VERSION
-#   title      the release title prefix — `flair`, but `Soundness`
+#   title      the release title prefix — `flare`, but `Soundness`
 #   build      mill targets run, in order, before `release.stage`
 #   launcher   the launcher module, when executables are published; absent for a library
 #   hints      the `--github` publication homes Burdock matches the classpath against
