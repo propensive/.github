@@ -14,7 +14,7 @@ const { onRequest } = require("firebase-functions/v2/https");
 // The tools served, which are the repositories whose releases carry the installers. The list
 // is explicit so that this is not a proxy to any propensive repository, or to any name a
 // visitor types.
-const TOOLS = new Set(["flame", "fume", "fuel", "flair", "tel", "lira", "xek", "fury", "fever"]);
+const TOOLS = new Set(["flame", "fume", "fuel", "flare", "tel", "lira", "xek", "fury", "fever"]);
 
 const HOME = "https://propensive.com/";
 const TTL = 5 * 60 * 1000;

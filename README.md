@@ -3,7 +3,7 @@
 Reusable GitHub Actions workflows and scripts for Propensive's Soundness-ecosystem repositories
 ([soundness](https://github.com/propensive/soundness), [pyrocosm](https://github.com/propensive/pyrocosm),
 [fume](https://github.com/propensive/fume), [flame](https://github.com/propensive/flame),
-[flair](https://github.com/propensive/flair) and [xek](https://github.com/propensive/xek)).
+[flare](https://github.com/propensive/flare) and [xek](https://github.com/propensive/xek)).
 
 ## Scripts, through `etc/shared`
 
@@ -69,7 +69,7 @@ def mvnDeps = Task(Seq(mvn"dev.propensive:pyrocosm-model:${deps.version("pyrocos
 
 A **dependency** is what a repository's jars are compiled against, and what their POMs will
 name: Soundness for Pyrocosm, Pyrocosm for fume. A **tool** is what a repository *runs*: fume
-to run its tests, flair to check its sources, the flair compiler plugin Soundness loads with
+to run its tests, flare to check its sources, the flare compiler plugin Soundness loads with
 `-Xplugin`. A tool never appears in a POM, so it is pinned separately, in `etc/tools`, in the
 same shape as `etc/refs` but with two rules: a tool is always a release (`deps.py` rejects a
 snapshot there), and a tool is not part of the transitive closure and does not gate a release,
@@ -78,10 +78,10 @@ because a release of it exists by definition.
 ```
 # repository          version
 propensive/fume       0.3.0
-propensive/flair      0.2.0
+propensive/flare      0.2.0
 ```
 
-This is what keeps the release graph acyclic. Soundness runs flair, flair depends on Pyrocosm,
+This is what keeps the release graph acyclic. Soundness runs flare, flare depends on Pyrocosm,
 Pyrocosm depends on Soundness; were the first of those a dependency, no one of the three could
 be released before the other two. `sync-deps.sh` installs a tool's jars (for a plugin), and
 `make tools` runs `tools.sh`, which installs a tool's command through its release's
@@ -180,7 +180,7 @@ silently drop a gate.
 | key | what it says |
 |---|---|
 | `name` | the repository and application name; gives `propensive/<name>` and `<NAME>_RELEASE_VERSION` |
-| `title` | the release title prefix — `flair`, but `Soundness` |
+| `title` | the release title prefix — `flare`, but `Soundness` |
 | `build` | mill targets run, in order, before `release.stage` |
 | `launcher` | the launcher module, when executables are published; absent for a library |
 | `hints` | the `--github` publication homes Burdock matches the classpath against |
@@ -222,7 +222,7 @@ A **library** repository (Soundness, Pyrocosm) publishes a draft, uploads in bat
 checks every asset's digest against the local file, and only then makes the release visible, so
 nothing partial is ever seen.
 
-An **application** repository (fume, flame, flair) cannot use a draft: its executables
+An **application** repository (fume, flame, flare) cannot use a draft: its executables
 externalize each library by matching a SHA-256 against the release's *published* assets, and a
 draft's asset URLs live under an `untagged-…` path that changes on publication, which would bake
 dead URLs into them. So the release is made in two steps, exactly as it must be consumed — the
@@ -320,20 +320,20 @@ recovery key exists, and why the release key can later move to a KMS without a c
 A repository that names its consumers in `etc/downstream` — one repository per line, `#` for
 comments — has each release proposed to them as a draft pull request, once it is published. The
 chain is declared where it starts, and only as far as the next link: xek names Soundness,
-Soundness names Pyrocosm, and Pyrocosm names fume, flame and flair.
+Soundness names Pyrocosm, and Pyrocosm names fume, flame and flare.
 
 ```
 # etc/downstream in Pyrocosm
 propensive/fume
 propensive/flame
-propensive/flair
+propensive/flare
 ```
 
 `propagate.py` makes each pull request, on a branch `pins/<name>-<version>` of the consumer. It
 moves the released repository's pin in the consumer's `etc/refs` to the release, and every other
 pin the consumer shares with the release's own `etc/refs` to the version the release was built
 against; and it moves the consumer's `etc/xek.tsv` to the release's. So a Pyrocosm release
-carries the Soundness and the xek it was built against to fume, flame and flair in one pull
+carries the Soundness and the xek it was built against to fume, flame and flare in one pull
 request each. A pin only moves forwards — a consumer already on something newer keeps it — and a
 consumer with nothing to change, or whose branch already exists, is left alone.
 

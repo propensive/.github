@@ -20,12 +20,12 @@ lives; CI keys its cache on the files' hashes.
 
 A TOOL is different from a dependency. A dependency is what a repository's jars are compiled
 against, and what their POMs will name: Soundness for Pyrocosm, Pyrocosm for fume. A tool is
-what a repository RUNS — fume to run its tests, flair to check its sources, the flair compiler
+what a repository RUNS — fume to run its tests, flare to check its sources, the flare compiler
 plugin Soundness loads with `-Xplugin` — and never appears in a POM. Tools are pinned in
 `etc/tools`, in the same shape, with two differences: a tool is always a RELEASE (a snapshot
 there is rejected), and a tool is not part of the closure `walk` computes or `check` gates,
 since a release of it exists by definition. That is what keeps the release graph acyclic:
-Soundness runs flair, flair depends on Pyrocosm, Pyrocosm depends on Soundness, and none of
+Soundness runs flare, flare depends on Pyrocosm, Pyrocosm depends on Soundness, and none of
 those releases waits on the others. `sync-deps.sh` installs a tool's jars (a plugin is a jar);
 `tools.sh` installs a tool's command.
 
