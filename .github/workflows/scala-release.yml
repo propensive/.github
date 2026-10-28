@@ -47,6 +47,17 @@ on:
       # and never as a repository secret, which any workflow on any branch could read.
       UPGRADE_SIGNING_SEED:
         required: false
+      # For a repository whose `etc/release` names an `after` command that also publishes to Maven
+      # Central (crux, and only crux): a Central Portal user token and the PGP key Mill signs with.
+      # Empty for every other caller.
+      MILL_SONATYPE_USERNAME:
+        required: false
+      MILL_SONATYPE_PASSWORD:
+        required: false
+      MILL_PGP_SECRET_BASE64:
+        required: false
+      MILL_PGP_PASSPHRASE:
+        required: false
 
 jobs:
   release:
@@ -112,4 +123,8 @@ jobs:
           RELEASE_ALLOW_SNAPSHOTS: ${{ vars.RELEASE_ALLOW_SNAPSHOTS }}
           # Only in this step, and release.sh unsets it before running anything else.
           UPGRADE_SIGNING_SEED: ${{ secrets.UPGRADE_SIGNING_SEED }}
+          MILL_SONATYPE_USERNAME: ${{ secrets.MILL_SONATYPE_USERNAME }}
+          MILL_SONATYPE_PASSWORD: ${{ secrets.MILL_SONATYPE_PASSWORD }}
+          MILL_PGP_SECRET_BASE64: ${{ secrets.MILL_PGP_SECRET_BASE64 }}
+          MILL_PGP_PASSPHRASE: ${{ secrets.MILL_PGP_PASSPHRASE }}
         run: ./etc/shared release.sh

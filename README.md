@@ -194,6 +194,17 @@ silently drop a gate.
 The library list is *not* declared: it is read from the filenames `release.stage` produces. Nor
 is the version pin: `release.sh` looks for `val <name>Version` in `build.mill` itself.
 
+`release.stage` writes two files per module: `<artifactId>-<version>.jar`, with its POM and
+ivy.xml embedded under `META-INF/maven/`, which becomes a release asset; and
+`<artifactId>-<version>.ivy.xml`, the descriptor Coursier reads when
+[crux](https://github.com/propensive/crux) uses the release directly as an Ivy-pattern repository,
+which `release.sh` commits to `<version>/` on the repository's orphan `ivy` branch (created on
+first use) and pushes before the release is made visible — GitHub allows a release a thousand
+assets, and Soundness's jars alone are most of that. crux reads
+`…/releases/download/<tag>/[artifact]-[revision](-[classifier]).[ext]` with metadata
+`https://raw.githubusercontent.com/<repo>/ivy/<version>/[module]-[revision].ivy.xml`. The script
+refuses to release a stage with jars but without their descriptors.
+
 ### A release that is not jars: `assemble`
 
 xek releases native runner stubs and a shell script, not jars, but it is released the same way,

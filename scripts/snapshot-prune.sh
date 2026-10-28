@@ -29,3 +29,24 @@ for tag in "${stale[@]}"; do
   gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
   echo "snapshot-prune: deleted $tag"
 done
+
+# Their descriptors too: each pruned snapshot's `<version>/` directory on the `ivy` branch (see
+# snapshot.sh), where the version is `X.Y.Z-<hex>` for the tag `snapshot-<hex>`.
+if git ls-remote --exit-code --heads "https://github.com/$REPO.git" ivy >/dev/null 2>&1; then
+  dir=$(mktemp -d)
+  git clone --quiet --depth 1 --branch ivy "https://github.com/$REPO.git" "$dir"
+  removed=0
+  for tag in "${stale[@]}"; do
+    for version in "$dir"/*-"${tag#snapshot-}"; do
+      [[ -d "$version" ]] || continue
+      git -C "$dir" rm -rq "$(basename "$version")"
+      removed=$((removed + 1))
+    done
+  done
+  if (( removed > 0 )); then
+    git -C "$dir" commit --quiet -m "Prune the descriptors of $removed snapshots"
+    git -C "$dir" -c credential.helper='!gh auth git-credential' push --quiet origin HEAD:ivy
+    echo "snapshot-prune: removed the descriptors of $removed snapshots from the ivy branch"
+  fi
+  rm -rf "$dir"
+fi
