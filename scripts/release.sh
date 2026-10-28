@@ -520,6 +520,9 @@ if [[ -n "$ASSEMBLE" ]]; then
   mapfile -t jars < <(find "$ASSETS_DIR" -maxdepth 1 -type f | sort)
   count=${#jars[@]}
   (( count > 0 )) || fail "\`$ASSEMBLE\` wrote nothing into \$RELEASE_ASSETS"
+  assets=("${jars[@]}")
+  total=$count
+  descriptors=()
   LIBRARIES=""
   note "assembled $count assets for $TAG"
 
@@ -546,13 +549,22 @@ else
 
   # `release.stage` builds every released jar into one directory under its release asset name, with
   # its POM and ivy.xml embedded under META-INF/maven/ — the jar alone is then enough for a
-  # consumer's sync-deps.sh to rebuild a resolvable local repository.
+  # consumer's sync-deps.sh to rebuild a resolvable local repository — and beside each jar its
+  # `<artifactId>-<version>.ivy.xml`, the descriptor Coursier reads when crux (propensive/crux)
+  # uses the release as an Ivy-pattern repository. The jars become the release's assets; the
+  # descriptors go to the `ivy` branch (`publish_descriptors`, below), since GitHub allows a
+  # release a thousand assets and Soundness's jars alone are most of that.
   ./mill release.stage || fail "staging the release jars failed"
 
   STAGE_DIR="out/release/stage.dest"
   mapfile -t jars < <(find "$STAGE_DIR" -maxdepth 1 -name '*.jar' | sort)
+  mapfile -t descriptors < <(find "$STAGE_DIR" -maxdepth 1 -name '*.ivy.xml' | sort)
   count=${#jars[@]}
   (( count > 0 )) || fail "release.stage produced no jars"
+  (( ${#descriptors[@]} == count )) ||
+    fail "release.stage produced $count jars but ${#descriptors[@]} ivy.xml descriptors; does its stage task emit both?"
+  assets=("${jars[@]}")
+  total=$count
 
   LIBRARIES=""
   for jar in "${jars[@]}"; do
@@ -561,7 +573,7 @@ else
     LIBRARIES="$LIBRARIES ${base%-"$VERSION".jar}"
   done
   LIBRARIES=${LIBRARIES# }
-  note "staged $count jars for $VERSION"
+  note "staged $count jars and their descriptors for $VERSION"
 
   # Installed over whatever publishLocal left, so that a launcher's compile classpath holds exactly
   # the bytes being released — which is what Burdock hashes and matches against the release assets.
@@ -631,15 +643,53 @@ verify_digests() {
     [[ -n "$name" ]] && remote["$name"]=$got
   done <<< "$listing"
 
-  for jar in "${jars[@]}"; do
-    name=$(basename "$jar")
-    local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
+  for asset in "${assets[@]}"; do
+    name=$(basename "$asset")
+    local_digest=$(shasum -a 256 "$asset" | cut -d' ' -f1)
     got=${remote[$name]:-}
     [[ -n "$got" ]] || fail "the release has no asset named $name"
     [[ "$got" == "sha256:$local_digest" ]] ||
       fail "released digest '$got' for $name does not match local sha256:$local_digest"
   done
-  note "every asset's digest matches ($count checked in one request)"
+  note "every asset's digest matches ($total checked in one request)"
+}
+
+# Publishes the staged descriptors as `<version>/<artifactId>-<version>.ivy.xml` on the orphan
+# `ivy` branch of this repository — created if absent — where crux reads them at
+# https://raw.githubusercontent.com/<repo>/ivy/<version>/. The push is the job's own token's
+# (`contents: write`), through the credential helper `gh` provides. Done before the release is
+# made visible, so a consumer never sees jars without their descriptors; a failure fails the
+# release before anything is public.
+publish_descriptors() {
+  (( ${#descriptors[@]} > 0 )) || return 0
+  local dir branch=ivy
+  dir=$(mktemp -d)
+  if git ls-remote --exit-code --heads "https://github.com/$REPO.git" "$branch" >/dev/null 2>&1; then
+    git clone --quiet --depth 1 --branch "$branch" "https://github.com/$REPO.git" "$dir" ||
+      fail "could not clone the $branch branch"
+  else
+    git clone --quiet --depth 1 --no-checkout "https://github.com/$REPO.git" "$dir" ||
+      fail "could not clone $REPO"
+    git -C "$dir" checkout --quiet --orphan "$branch"
+    git -C "$dir" rm -rfq --cached . 2>/dev/null || true
+    find "$dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+    printf '%s\n' "# Descriptors" "" \
+      "One directory per released version, holding the \`<artifactId>-<version>.ivy.xml\` of every" \
+      "module in that release: the metadata Coursier reads when crux (propensive/crux) uses the" \
+      "release as an Ivy-pattern repository. The jars are the release's assets. Written by the" \
+      "release pipeline; not for editing." > "$dir/README.md"
+    git -C "$dir" add README.md
+  fi
+  rm -rf "$dir/$VERSION"
+  mkdir -p "$dir/$VERSION"
+  cp "${descriptors[@]}" "$dir/$VERSION/"
+  git -C "$dir" add -A "$VERSION" README.md
+  git -C "$dir" -c user.name="github-actions[bot]" \
+    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+    commit --quiet -m "Descriptors for $VERSION" || fail "committing the descriptors failed"
+  git -C "$dir" -c credential.helper='!gh auth git-credential' push --quiet origin "HEAD:$branch" ||
+    fail "pushing the $branch branch failed"
+  note "published ${#descriptors[@]} descriptors to the $branch branch"
 }
 
 # Uploads one batch, retrying a transient failure rather than discarding the build.
@@ -673,15 +723,15 @@ if [[ -z "$LAUNCHER" ]]; then
   published="draft"
 
   # In batches, so each API session is short enough to retry cheaply; `--clobber` makes a
-  # retried batch idempotent. Soundness attaches some six hundred jars.
+  # retried batch idempotent. Soundness attaches some seven hundred jars.
   batch=50
-  for (( start = 0; start < count; start += batch )); do
-    upload_batch "${jars[@]:start:batch}" ||
-      fail "uploading jars $((start + 1))-$(( start + batch > count ? count : start + batch )) failed after five attempts"
-    note "uploaded $(( start + batch > count ? count : start + batch ))/$count jars"
+  for (( start = 0; start < total; start += batch )); do
+    upload_batch "${assets[@]:start:batch}" ||
+      fail "uploading assets $((start + 1))-$(( start + batch > total ? total : start + batch )) failed after five attempts"
+    note "uploaded $(( start + batch > total ? total : start + batch ))/$total assets"
     # Paced so the common case never reaches the secondary limit in the first place; the retry
     # above is the safety net, not the plan. Skipped after the final batch.
-    (( start + batch < count )) && sleep 10
+    (( start + batch < total )) && sleep 10
   done
 
   # By release id through the REST API: `gh release view --json assets` does not expose the
@@ -693,24 +743,26 @@ if [[ -z "$LAUNCHER" ]]; then
   verify_digests "$RELEASE_ID"
 
   uploaded=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets?per_page=100" --paginate --jq '.[].name' | wc -l | tr -d ' ')
-  [[ "$uploaded" == "$count" ]] ||
-    fail "the draft release has $uploaded assets but $count jars were staged"
+  [[ "$uploaded" == "$total" ]] ||
+    fail "the draft release has $uploaded assets but $total were staged"
 
   NOTES=$(mktemp)
   "$PROPENSIVE_SHARED" release_notes.py "$VERSION" > "$NOTES" || fail "generating the notes failed"
   [[ -s "$NOTES" ]] || fail "the generated notes are empty"
   gh release edit "$TAG" --repo "$REPO" --notes-file "$NOTES" >/dev/null ||
     fail "could not write the release notes"
+  publish_descriptors
   gh release edit "$TAG" --repo "$REPO" --draft=false >/dev/null ||
     fail "could not publish the draft"
 
 else
 
-  # Step 1: the release, with the library jars alone — the exact bytes the local publish put on
-  # the launcher's compile classpath, so the digests GitHub records are the hashes Burdock
-  # computed at compile time.
+  # Step 1: the descriptors, then the release with the library jars alone — the exact bytes the
+  # local publish put on the launcher's compile classpath, so the digests GitHub records are the
+  # hashes Burdock computed at compile time.
+  publish_descriptors
   gh release create "$TAG" --repo "$REPO" --title "$TITLE $VERSION" \
-    --notes "Publishing…" "${jars[@]}" >/dev/null || fail "could not create the release"
+    --notes "Publishing…" "${assets[@]}" >/dev/null || fail "could not create the release"
   published="yes"
 
   RELEASE_ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)

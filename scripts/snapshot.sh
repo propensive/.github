@@ -70,16 +70,23 @@ if [[ "${CLEAN:-0}" == 1 ]]; then ./mill clean >/dev/null; fi
 
 STAGE_DIR="out/release/stage.dest"
 mapfile -t jars < <(find "$STAGE_DIR" -maxdepth 1 -name '*.jar' | sort)
+mapfile -t descriptors < <(find "$STAGE_DIR" -maxdepth 1 -name '*.ivy.xml' | sort)
 if (( ${#jars[@]} == 0 )); then
   echo "snapshot: release.stage produced no jars" >&2; exit 1
 fi
+if (( ${#descriptors[@]} != ${#jars[@]} )); then
+  echo "snapshot: release.stage produced ${#jars[@]} jars but ${#descriptors[@]} ivy.xml descriptors; does its stage task emit both?" >&2; exit 1
+fi
+# The jars are the pre-release's assets; the `<artifactId>-<version>.ivy.xml` descriptors that
+# crux (propensive/crux) reads go to the `ivy` branch, as release.sh publishes them.
+assets=("${jars[@]}")
 for jar in "${jars[@]}"; do
   if [[ "$(basename "$jar")" != *"-$VERSION.jar" ]]; then
     echo "snapshot: staged jar $(basename "$jar") does not carry $VERSION; does build.mill read ${UPPER}_RELEASE_VERSION through Task.env?" >&2
     exit 1
   fi
 done
-echo "snapshot: staged ${#jars[@]} jars"
+echo "snapshot: staged ${#jars[@]} jars and their descriptors"
 
 # Installed locally first, from the staged directory, so this checkout and every consumer on
 # this machine resolve the same bytes the pre-release will hold.
@@ -90,21 +97,37 @@ if [[ "$LOCAL" == 1 ]]; then
 elif gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   echo "snapshot: $REPO already has $TAG; nothing to upload"
 else
+  dir=$(mktemp -d)
+  if git ls-remote --exit-code --heads "https://github.com/$REPO.git" ivy >/dev/null 2>&1; then
+    git clone --quiet --depth 1 --branch ivy "https://github.com/$REPO.git" "$dir"
+  else
+    git clone --quiet --depth 1 --no-checkout "https://github.com/$REPO.git" "$dir"
+    git -C "$dir" checkout --quiet --orphan ivy
+    git -C "$dir" rm -rfq --cached . 2>/dev/null || true
+    find "$dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+  fi
+  mkdir -p "$dir/$VERSION"
+  cp "${descriptors[@]}" "$dir/$VERSION/"
+  git -C "$dir" add -A "$VERSION"
+  git -C "$dir" commit --quiet -m "Descriptors for snapshot $VERSION"
+  git -C "$dir" -c credential.helper='!gh auth git-credential' push --quiet origin HEAD:ivy
+  echo "snapshot: published ${#descriptors[@]} descriptors to the ivy branch"
+
   notes="Snapshot $VERSION of $NAME, built from $COMMIT (filtered tree $TREE): the library jars \
 of an UNRELEASED build, each with its POM and ivy.xml embedded, for a dependent repository to pin \
 in its etc/refs until $NAME is released. Not for use as a release; it may be deleted once \
 nothing pins it."
   gh release create "$TAG" --repo "$REPO" --prerelease --target "$COMMIT" \
-    --title "$NAME snapshot $HEX" --notes "$notes" "${jars[@]}" >/dev/null
-  echo "snapshot: uploaded ${#jars[@]} jars to $TAG"
+    --title "$NAME snapshot $HEX" --notes "$notes" "${assets[@]}" >/dev/null
+  echo "snapshot: uploaded ${#assets[@]} assets to $TAG"
 
   # GitHub computes each asset's SHA-256 shortly after upload; wait for them all and confirm
   # each is the digest of the local file, since that is what a consumer will verify against.
   # Through the REST API, as release.sh does: `gh release view --json assets` does
   # not expose the digest.
-  for jar in "${jars[@]}"; do
-    name=$(basename "$jar")
-    local_digest=$(shasum -a 256 "$jar" | cut -d' ' -f1)
+  for asset in "${assets[@]}"; do
+    name=$(basename "$asset")
+    local_digest=$(shasum -a 256 "$asset" | cut -d' ' -f1)
     digest=""
     for i in $(seq 1 60); do
       digest=$(gh api "repos/$REPO/releases/tags/$TAG" \
