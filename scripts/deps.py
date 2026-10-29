@@ -64,6 +64,10 @@ from pathlib import Path
 
 RELEASE = re.compile(r"^\d+\.\d+\.\d+$")
 SNAPSHOT = re.compile(r"^\d+\.\d+\.\d+-([0-9a-f]{12})$")
+# A Proscala version, `<upstream Scala>-pro-X.Y.Z` (the upstream part may carry a 16-hex commit,
+# for a build of an upstream snapshot): one of the compilers in the Proscala release tagged
+# `X.Y.Z`. A release by kind — Proscala publishes no snapshots.
+PROSCALA = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9a-f]{16})?-pro-(\d+\.\d+\.\d+)$")
 DEFAULT_FILE = Path("etc/refs")
 TOOLS_FILE = Path("etc/tools")
 
@@ -80,8 +84,11 @@ class Pin:
 
     @property
     def tag(self) -> str:
-        match = SNAPSHOT.match(self.version)
-        return f"snapshot-{match.group(1)}" if match else self.version
+        if (match := SNAPSHOT.match(self.version)):
+            return f"snapshot-{match.group(1)}"
+        if (match := PROSCALA.match(self.version)):
+            return match.group(1)
+        return self.version
 
 
 def fail(message: str) -> None:
@@ -94,11 +101,12 @@ def log(message: str) -> None:
 
 
 def kind_of(version: str) -> str:
-    if RELEASE.match(version):
+    if RELEASE.match(version) or PROSCALA.match(version):
         return "release"
     if SNAPSHOT.match(version):
         return "snapshot"
-    fail(f"'{version}' is neither a release (X.Y.Z) nor a snapshot (X.Y.Z-<12 hex>)")
+    fail(f"'{version}' is neither a release (X.Y.Z), a snapshot (X.Y.Z-<12 hex>) nor a Proscala "
+         "version (<scala>-pro-X.Y.Z)")
     return ""  # unreachable
 
 
