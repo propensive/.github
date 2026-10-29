@@ -14,7 +14,7 @@ repository in `etc/github-ref`. `etc/shared <script> …` fetches that script at
 
 | script | what it does |
 |---|---|
-| `sync-deps.sh` | installs every library pinned in `etc/refs`, transitively, and every tool's jars from `etc/tools`, into `~/.ivy2/local` |
+| `sync-deps.sh` | installs every library pinned in `etc/refs`, transitively, and every tool's jars from `etc/tools`, into `~/.ivy2/local` — the pre-crux way; builds now resolve their pins themselves, and CI no longer runs this |
 | `tools.sh` | installs the commands pinned in `etc/tools` through their releases' installers |
 | `snapshot.sh <name> <base>` | publishes an unreleased build as a `snapshot-<hex>` pre-release, for others to pin |
 | `snapshot-prune.sh <name> [days]` | deletes old snapshot pre-releases |

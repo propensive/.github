@@ -1,15 +1,13 @@
 name: Scala CI
 
-# Reusable CI for Soundness-ecosystem applications: install every library pinned in the
-# caller's etc/refs (releases and snapshots alike, transitively — see scripts/deps.py) from
-# GitHub Releases into ~/.ivy2/local, install the tools pinned in its etc/tools, compile,
-# publish any locally-resolved module, assemble, and run the test suites with fume. Callers name their Mill targets; the pins are read from the CALLER's
-# repository, so a dependency or toolchain bump re-keys the caches and re-syncs with no
-# workflow change.
+# Reusable CI for Soundness-ecosystem applications: install the tools pinned in the caller's
+# etc/tools, compile, publish any locally-resolved module, assemble, and run the test suites
+# with fume. The libraries pinned in the caller's etc/refs (releases and snapshots alike,
+# transitively) and the Proscala compiler are resolved by the build itself, through crux
+# (propensive/crux), from their GitHub releases. Callers name their Mill targets.
 #
 # Contract with the caller: a checked-in `./mill` bootstrap wrapper, `etc/shared` with
-# `etc/github-ref` (the pinned commit of this repository whose scripts run), `etc/refs`,
-# and the `SOUNDNESS_SCALA_RELEASE` pin in build.mill.
+# `etc/github-ref` (the pinned commit of this repository whose scripts run), and `etc/refs`.
 
 on:
   workflow_call:
@@ -51,12 +49,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The toolchain pin lives in the caller's build.mill; the library pins in etc/refs.
-      - name: Read version pins
-        id: pins
-        run: |
-          echo "scala=$(sed -n 's/.*SOUNDNESS_SCALA_RELEASE", "\(.*\)").*/\1/p' build.mill)" >> "$GITHUB_OUTPUT"
-
       # Mill's bootstrap needs a JVM to start from; the build provisions its own toolchain
       # JVM, but the test suite runs with plain `java`, so this must be at least the bytecode
       # level the build targets.
@@ -65,17 +57,6 @@ jobs:
           distribution: temurin
           java-version: 25
 
-      # Keyed by the pin file: a bump, or a snapshot pin, re-syncs; anything else is a hit.
-      - name: Cache pinned libraries
-        uses: actions/cache@v5
-        with:
-          path: ~/.ivy2/local/dev.propensive
-          key: deps-${{ hashFiles('etc/refs') }}
-      - name: Cache proscala toolchain
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/soundness/proscala
-          key: proscala-${{ steps.pins.outputs.scala }}
       - name: Cache coursier
         uses: actions/cache@v5
         with:
@@ -83,16 +64,10 @@ jobs:
           key: coursier-${{ hashFiles('build.mill') }}
           restore-keys: coursier-
 
-      # Every pinned library is per-component jars on GitHub Releases, each embedding its own
-      # POM and ivy.xml, from which the sync script (run at the commit of this repository the
-      # caller pins in etc/github-ref) reconstructs the ivy2 layout coursier resolves from. A
-      # snapshot pin resolves to its `snapshot-<hex>` pre-release; there is no sibling checkout
-      # here, so a snapshot nobody has published fails the build by name. The token only lifts
-      # the API rate limit. Idempotent: digest-matched jars are left alone.
-      - name: Sync the pinned libraries
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: ./etc/shared sync-deps.sh
+      # The pinned libraries and the Proscala compiler are resolved by the build itself, through
+      # crux (propensive/crux), straight from their GitHub releases into the coursier cache above;
+      # nothing is installed into ~/.ivy2/local. A snapshot pin resolves to its `snapshot-<hex>`
+      # pre-release, so a snapshot nobody has published fails the build by name.
 
       # The commands pinned in etc/tools — fume, for the tests — installed through their
       # releases' installers into ~/.local/bin, which is put on the path for the later steps.

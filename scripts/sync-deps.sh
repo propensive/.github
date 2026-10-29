@@ -76,6 +76,8 @@ build_snapshot() {
 
 count=0
 while IFS=$'\t' read -r repo version tag kind commit; do
+  # A Proscala pin is the compiler, which the build resolves through crux; nothing to install.
+  [[ "$version" == *-pro-* ]] && continue
   [[ -z "$repo" ]] && continue
   count=$((count + 1))
   status=0

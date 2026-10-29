@@ -263,7 +263,8 @@ if [[ "${RELEASE_ALLOW_SNAPSHOTS:-0}" == 1 ]]; then
 else
   "$PROPENSIVE_SHARED" deps.py check
 fi
-[[ -n "$ASSEMBLE" ]] || "$PROPENSIVE_SHARED" sync-deps.sh
+# The pinned libraries and the compiler are resolved by the build itself, through crux
+# (propensive/crux), from their GitHub releases; nothing is installed first.
 
 # The `xek` builder packages the executables. Fetch and verify it before anything is published,
 # so a failed download cannot leave a half-made release behind.
@@ -548,8 +549,8 @@ else
   done < <(config probes)
 
   # `release.stage` builds every released jar into one directory under its release asset name, with
-  # its POM and ivy.xml embedded under META-INF/maven/ — the jar alone is then enough for a
-  # consumer's sync-deps.sh to rebuild a resolvable local repository — and beside each jar its
+  # its POM and ivy.xml embedded under META-INF/maven/, so the jar alone describes itself — and
+  # beside each jar its
   # `<artifactId>-<version>.ivy.xml`, the descriptor Coursier reads when crux (propensive/crux)
   # uses the release as an Ivy-pattern repository. The jars become the release's assets; the
   # descriptors go to the `ivy` branch (`publish_descriptors`, below), since GitHub allows a
