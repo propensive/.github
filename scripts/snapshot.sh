@@ -94,7 +94,9 @@ echo "snapshot: staged ${#jars[@]} jars and their descriptors"
 
 if [[ "$LOCAL" == 1 ]]; then
   echo "snapshot: installed locally only (LOCAL=1); not published"
-elif gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+elif [[ "$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id 2>/dev/null || true)" =~ ^[0-9]+$ ]]; then
+  # `releases/tags/<tag>` answers only for a PUBLISHED release; a draft left by a failed upload
+  # is resumed below instead.
   echo "snapshot: $REPO already has $TAG; nothing to upload"
 else
   dir=$(mktemp -d)
@@ -109,38 +111,148 @@ else
   mkdir -p "$dir/$VERSION"
   cp "${descriptors[@]}" "$dir/$VERSION/"
   git -C "$dir" add -A "$VERSION"
-  git -C "$dir" commit --quiet -m "Descriptors for snapshot $VERSION"
-  git -C "$dir" -c credential.helper='!gh auth git-credential' push --quiet origin HEAD:ivy
-  echo "snapshot: published ${#descriptors[@]} descriptors to the ivy branch"
+  # Nothing to commit when a retry finds the descriptors already published.
+  if git -C "$dir" diff --cached --quiet; then
+    echo "snapshot: the ivy branch already has the ${#descriptors[@]} descriptors"
+  else
+    git -C "$dir" commit --quiet -m "Descriptors for snapshot $VERSION"
+    git -C "$dir" -c credential.helper='!gh auth git-credential' push --quiet origin HEAD:ivy
+    echo "snapshot: published ${#descriptors[@]} descriptors to the ivy branch"
+  fi
 
   notes="Snapshot $VERSION of $NAME, built from $COMMIT (filtered tree $TREE): the library jars \
 of an UNRELEASED build, each with its POM and ivy.xml embedded, for a dependent repository to pin \
 in its etc/refs until $NAME is released. Not for use as a release; it may be deleted once \
 nothing pins it."
-  gh release create "$TAG" --repo "$REPO" --prerelease --target "$COMMIT" \
-    --title "$NAME snapshot $HEX" --notes "$notes" "${assets[@]}" >/dev/null
-  echo "snapshot: uploaded ${#assets[@]} assets to $TAG"
 
-  # GitHub computes each asset's SHA-256 shortly after upload; wait for them all and confirm
-  # each is the digest of the local file, since that is what a consumer will verify against.
-  # Through the REST API, as release.sh does: `gh release view --json assets` does
-  # not expose the digest.
+  # A draft first, then the assets in batches, then published — as release.sh does. One
+  # `gh release create` carrying seven hundred assets is a single upload session, which GitHub
+  # ends for inactivity (HTTP 408) before Soundness's jars are through, and leaves a draft
+  # behind. A draft with this tag is resumed, not skipped: `--clobber` makes re-sending an
+  # asset that already landed idempotent, so the batches simply fill the gaps.
+  # Runs a gh command, retrying when GitHub answers with a transient error (a 502 or 504 does
+  # happen), so that a flaky minute does not end a run that took an hour to stage. Under
+  # `set -e` a bare failure would also end the script without a word.
+  retry() {
+    local attempt attempts=5
+    for (( attempt = 1; attempt <= attempts; attempt++ )); do
+      if "$@"; then return 0; fi
+      if (( attempt == attempts )); then
+        echo "snapshot: '$1 $2 $3' failed $attempts times; giving up" >&2; return 1
+      fi
+      echo "snapshot: '$1 $2 $3' failed; retrying in $((15 * attempt))s" >&2
+      sleep $((15 * attempt))
+    done
+  }
+
+  draft_id() {
+    retry gh api "repos/$REPO/releases?per_page=100" --paginate \
+      --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" | head -1
+  }
+
+  RELEASE_ID=$(draft_id) || { echo "snapshot: could not list $REPO's releases" >&2; exit 1; }
+  if [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+    echo "snapshot: resuming the draft $TAG (release $RELEASE_ID)"
+  else
+    retry gh release create "$TAG" --repo "$REPO" --prerelease --draft --target "$COMMIT" \
+      --title "$NAME snapshot $HEX" --notes "$notes" >/dev/null ||
+      { echo "snapshot: could not create the draft $TAG" >&2; exit 1; }
+    RELEASE_ID=$(draft_id) || true
+    [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || { echo "snapshot: could not find the draft $TAG" >&2; exit 1; }
+  fi
+
+  # Uploads one batch, retrying a transient failure (a timeout, or the secondary rate limit
+  # asset uploads reach) with growing backoff rather than discarding the build.
+  upload_batch() {
+    local attempt delay attempts=5
+    for (( attempt = 1; attempt <= attempts; attempt++ )); do
+      if gh release upload "$TAG" --repo "$REPO" --clobber "$@" >/dev/null; then return 0; fi
+      if (( attempt == attempts )); then
+        echo "snapshot: upload attempt $attempt of $attempts failed; giving up" >&2; return 1
+      fi
+      delay=$((60 * attempt))
+      echo "snapshot: upload attempt $attempt of $attempts failed; retrying in ${delay}s" >&2
+      sleep "$delay"
+    done
+    return 1
+  }
+
+  # Uploads one asset alone, with its own retries: the fallback when a batch keeps failing.
+  # `gh` sends a batch's files concurrently, and GitHub ends any stream idle for too long
+  # (HTTP 408), so on a slow or uneven uplink one starved file fails a whole batch; a file
+  # sent alone has the connection to itself.
+  upload_single() {
+    local attempt attempts=5
+    for (( attempt = 1; attempt <= attempts; attempt++ )); do
+      if gh release upload "$TAG" --repo "$REPO" --clobber "$1" >/dev/null; then return 0; fi
+      (( attempt == attempts )) && return 1
+      echo "snapshot: $(basename "$1") failed to upload; retrying in $((30 * attempt))s" >&2
+      sleep $((30 * attempt))
+    done
+    return 1
+  }
+
+  # Only what the draft lacks: a resumed run re-sends nothing that already landed, since
+  # `--clobber` would delete and upload it again. An upload GitHub cut short leaves an asset
+  # in state `starter`, with the name but no bytes; it is not present, and `--clobber`
+  # replaces it.
+  present=$(retry gh api "repos/$REPO/releases/$RELEASE_ID/assets?per_page=100" --paginate \
+    --jq '.[] | select(.state == "uploaded") | .name' || true)
+  pending=()
+  for asset in "${assets[@]}"; do
+    grep -qxF "$(basename "$asset")" <<< "$present" || pending+=("$asset")
+  done
+  count=${#pending[@]}
+  echo "snapshot: ${#assets[@]} assets staged, $(( ${#assets[@]} - count )) already on $TAG, $count to upload"
+
+  batch=20
+  for (( start = 0; start < count; start += batch )); do
+    if ! upload_batch "${pending[@]:start:batch}"; then
+      echo "snapshot: batch $((start + 1))-$(( start + batch > count ? count : start + batch )) failed as a batch; sending its assets one at a time" >&2
+      for asset in "${pending[@]:start:batch}"; do
+        upload_single "$asset" ||
+          { echo "snapshot: uploading $(basename "$asset") failed after five attempts" >&2; exit 1; }
+      done
+    fi
+    echo "snapshot: uploaded $(( start + batch > count ? count : start + batch ))/$count assets"
+    (( start + batch < count )) && sleep 5
+  done
+
+  # GitHub computes each asset's SHA-256 shortly after upload; wait for them all, in ONE
+  # paginated request rather than one per asset, and confirm each is the digest of the local
+  # file, since that is what a consumer will verify against.
+  listing=""
+  for i in $(seq 1 60); do
+    listing=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets?per_page=100" --paginate \
+      --jq '.[] | .name + " " + (.digest // "")' 2>/dev/null || true)
+    if [[ -n "$listing" ]] && ! grep -q ' $' <<< "$listing"; then break; fi
+    sleep 5
+  done
+  declare -A remote=()
+  while read -r name got; do
+    [[ -n "$name" ]] && remote["$name"]=$got
+  done <<< "$listing"
   for asset in "${assets[@]}"; do
     name=$(basename "$asset")
     local_digest=$(shasum -a 256 "$asset" | cut -d' ' -f1)
-    digest=""
-    for i in $(seq 1 60); do
-      digest=$(gh api "repos/$REPO/releases/tags/$TAG" \
-        --jq ".assets[] | select(.name == \"$name\") | .digest // \"\"" 2>/dev/null || true)
-      [[ -n "$digest" ]] && break
-      sleep 5
-    done
-    if [[ "$digest" != "sha256:$local_digest" ]]; then
-      echo "snapshot: GitHub's digest '$digest' for $name does not match local sha256:$local_digest" >&2
+    got=${remote[$name]:-}
+    if [[ -z "$got" ]]; then
+      echo "snapshot: GitHub has no digest for $name (the asset is missing, or its upload was cut short); run again to resume" >&2
+      exit 1
+    elif [[ "$got" != "sha256:$local_digest" ]]; then
+      echo "snapshot: GitHub's digest '$got' for $name does not match local sha256:$local_digest" >&2
       exit 1
     fi
   done
+  uploaded=$(printf '%s\n' "$listing" | grep -c . || true)
+  if [[ "$uploaded" != "${#assets[@]}" ]]; then
+    echo "snapshot: the draft has $uploaded assets but ${#assets[@]} were staged" >&2; exit 1
+  fi
   echo "snapshot: every asset's digest matches"
+
+  retry gh release edit "$TAG" --repo "$REPO" --draft=false >/dev/null ||
+    { echo "snapshot: could not publish the draft $TAG" >&2; exit 1; }
+  echo "snapshot: published $TAG"
 fi
 
 echo "snapshot: pin it in a consumer's etc/refs as:"
