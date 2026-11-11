@@ -157,7 +157,12 @@ nothing pins it."
     retry gh release create "$TAG" --repo "$REPO" --prerelease --draft --target "$COMMIT" \
       --title "$NAME snapshot $HEX" --notes "$notes" >/dev/null ||
       { echo "snapshot: could not create the draft $TAG" >&2; exit 1; }
-    RELEASE_ID=$(draft_id) || true
+    # The list can lag the creation by a few seconds.
+    for _ in $(seq 1 12); do
+      RELEASE_ID=$(draft_id) || true
+      [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] && break
+      sleep 5
+    done
     [[ "$RELEASE_ID" =~ ^[0-9]+$ ]] || { echo "snapshot: could not find the draft $TAG" >&2; exit 1; }
   fi
 
