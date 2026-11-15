@@ -137,6 +137,12 @@ naming the fume release that runs the suites in `test_assembly` (installed with 
 and the `SOUNDNESS_SCALA_RELEASE", "…"` toolchain pin in `build.mill`, which keys the
 toolchain cache. `test_main` is ignored: fume discovers the suites from the assembly.
 
+A suite which compiles code with the embedded compiler needs the standard library of the
+Proscala release `scalaVersion` names, which the build never resolves as a directory. With
+`proscala_library: true`, the workflow downloads that release's tarball before the tests run and
+puts its `lib` in `~/.cache/soundness/proscala/<scalaVersion>/lib`, where Soundness's own build
+caches it.
+
 ## `scala-release.yml`, and releasing by tagging
 
 A release is cut by tagging, and nothing else:

@@ -37,6 +37,12 @@ on:
           fume itself is being rebuilt); empty, the default, runs them through fume
         type: string
         default: ""
+      proscala_library:
+        description: Install the standard library of the Proscala release named by `scalaVersion`
+          in build.mill into ~/.cache/soundness/proscala/<version>/lib before the tests run, for
+          suites which compile code with the embedded compiler and look for its library there
+        type: boolean
+        default: false
       timeout:
         description: Job timeout in minutes
         type: number
@@ -90,6 +96,32 @@ jobs:
         if: inputs.assembly != ''
         run: |
           for target in ${{ inputs.assembly }}; do ./mill "$target"; done
+
+      # The Proscala distribution's `lib`, which no Mill build resolves: crux fetches the compiler
+      # and the library as Maven artifacts, but a suite which runs the embedded compiler finds the
+      # library to compile against where Soundness's own build caches it, by version. The
+      # release is the part of `scalaVersion` after `-pro-`, and its tarball is named after the
+      # whole of it.
+      - name: Install the Proscala library
+        if: inputs.proscala_library && inputs.test_assembly != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^ *val scalaVersion = "\(.*\)".*/\1/p' build.mill | head -1)
+          case "$version" in
+            *-pro-*) ;;
+            *) echo "build.mill's scalaVersion ('$version') is not a Proscala version" >&2; exit 1 ;;
+          esac
+          release="${version##*-pro-}"
+          cache="$HOME/.cache/soundness/proscala/$version"
+          work=$(mktemp -d)
+          gh release download "$release" --repo propensive/proscala \
+            --pattern "proscala-$version.tar.gz" --dir "$work"
+          tar -xzf "$work/proscala-$version.tar.gz" -C "$work" lib
+          mkdir -p "$cache"
+          rm -rf "$cache/lib"
+          mv "$work/lib" "$cache/lib"
+          rm -rf "$work"
 
       # The assembly's jar lands at out/<target with dots as slashes>.dest/out.jar. fume
       # discovers every suite in it from the META-INF/services/probably.Suite index, renders
