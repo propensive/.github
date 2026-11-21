@@ -4,6 +4,9 @@
 // rewrites every path but `/` here (firebase.json); a path which is not a tool is sent to
 // propensive.com, as the old catch-all redirect did.
 //
+// It also serves a few files by exact path (`FILES`), such as the Propensity web font at
+// `/propensity.woff2`, each from the latest release of its repository.
+//
 // Nothing is published here per release. Each script is fetched from
 // github.com/propensive/<tool>/releases/latest/download/<script> — GitHub's "latest" redirect
 // — and held for a few minutes per instance, so a release is served within that long of being
@@ -20,6 +23,13 @@ const TOOLS = new Set([
 
 const HOME = "https://propensive.com/";
 const TTL = 5 * 60 * 1000;
+
+// Files served as themselves, by exact path, each from the latest release of one repository.
+// These are not installers: nothing about them depends on the client. A font is fetched by
+// pages on other sites, which a browser allows only with the CORS header below.
+const FILES = {
+  "/propensity.woff2": { repo: "propensity", asset: "Propensity-Regular.woff2", type: "font/woff2" },
+};
 
 // How long a fetched script is served before GitHub is asked again, and what each is served as:
 // `text/x-shellscript` is what a shell script is, and PowerShell's `irm` prints text/plain as
@@ -65,7 +75,52 @@ async function script(tool, kind) {
   }
 }
 
+// A file's bytes, held like the scripts: fetched from the latest release, kept for a few
+// minutes per instance, and served stale if a refresh fails.
+async function file(path) {
+  const held = cache.get(path);
+  if (held && Date.now() - held.at < TTL) return held.body;
+
+  const { repo, asset } = FILES[path];
+  const url = `https://github.com/propensive/${repo}/releases/latest/download/${asset}`;
+  try {
+    const response = await fetch(url, { redirect: "follow" });
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    const body = Buffer.from(await response.arrayBuffer());
+    cache.set(path, { body, at: Date.now() });
+    return body;
+  } catch (error) {
+    if (held) return held.body;
+    throw error;
+  }
+}
+
+async function serveFile(req, res) {
+  const { asset, type } = FILES[req.path];
+  let body;
+  try {
+    body = await file(req.path);
+  } catch (error) {
+    console.error(error);
+    res.set("Cache-Control", "no-store");
+    res.status(502).type("text/plain").send(`propensive.dev: ${asset} could not be fetched from GitHub\n`);
+    return;
+  }
+  // The same bytes for every client, so the CDN and browsers may keep them: for an hour,
+  // which is how long a new release can take to reach a visitor who already has the old one.
+  res.set("Cache-Control", "public, max-age=3600");
+  res.set("Access-Control-Allow-Origin", "*");
+  res.status(200).type(type);
+  if (req.method === "HEAD") res.end();
+  else res.send(body);
+}
+
 exports.installer = onRequest({ region: "us-central1", maxInstances: 3 }, async (req, res) => {
+  if (Object.hasOwn(FILES, req.path)) {
+    await serveFile(req, res);
+    return;
+  }
+
   const parsed = parse(req.path);
 
   if (!parsed) {

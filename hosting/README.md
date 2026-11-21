@@ -66,6 +66,30 @@ that for any repository with a `launcher`, with `xek installer` (xek 1.2 and lat
 whose release is assembled by its own command (xek's) runs `xek installer` into its assets there,
 and `release.sh` uploads them and checks their digests like any other asset.
 
+## Files served as themselves
+
+A few paths serve a file rather than an installer, each from the latest release of one
+repository. They are listed in `FILES` in `functions/index.js`:
+
+| path | served from | as |
+|---|---|---|
+| `/propensity.woff2` | `Propensity-Regular.woff2` in the latest release of `propensive/propensity` | `font/woff2` |
+
+The response is the file itself, a 200 with `Access-Control-Allow-Origin: *`, because a web
+font is fetched by pages on other sites and a browser refuses it without that header. It is
+the same for every client, so it is sent with `Cache-Control: public, max-age=3600`: a new
+release reaches a visitor who already has the old font within an hour. To use the font:
+
+```css
+@font-face {
+  font-family: "Propensity";
+  src: url("https://propensive.dev/propensity.woff2") format("woff2");
+}
+```
+
+Adding a file is an entry in `FILES` and `firebase deploy --only functions`, then
+`curl -sI https://propensive.dev/<path>` answers 200 with the file's type.
+
 ## Testing locally
 
 ```sh
