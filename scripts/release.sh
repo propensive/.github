@@ -27,7 +27,9 @@
 #   tag        the tag prefix, for a repository whose tags are not bare versions (`xek-`), then
 #              any earlier prefixes whose tags also count as releases, for the notes (`xeq-`)
 #   assemble   a command writing this release's assets into $RELEASE_ASSETS, for a repository
-#              whose release is not a set of Mill-staged jars; it replaces the build and staging
+#              whose release is not a set of Mill-staged jars; it replaces the build and staging.
+#              If it writes a `<name>-<platform>[.exe]` executable for every platform, the
+#              release gets an upgrade manifest, and may be keyed (see SIGNING below)
 #   after      a command run once the release is public, which cannot fail it; may be repeated
 #
 # Two things are deliberately NOT declared, because they can be derived: the library list (the
@@ -54,7 +56,9 @@ set -euo pipefail
 # `verify`, `assemble` and `after` commands — inherits it. From here it lives only in this
 # unexported variable, and reaches `xek` alone, through the environment of that one command; it is
 # never written to disk, passed as an argument, or echoed. The repository's own commands are run
-# in a subshell without it, since `eval` would otherwise let them read it.
+# in a subshell without it, since `eval` would otherwise let them read it. The one exception is
+# the `assemble` command of a keyed repository, which builds and so must sign its own
+# executables: it is given the seed as RELEASE_SIGNING_SEED, and owes it the same care.
 SIGNING_SEED=${UPGRADE_SIGNING_SEED:-}
 unset UPGRADE_SIGNING_SEED
 
@@ -301,6 +305,22 @@ fi
 # a rehearsal against a fork builds the same bytes. The gates below run before anything is
 # published, so a wrong secret or a careless rotation stops the release while the tag is all
 # there is.
+#
+# A repository which assembles its own release (`assemble`) — xek, whose executables are built by
+# the `xek` it has just compiled, not by a pinned one — is keyed in the same way, and goes
+# through the same gates but one: there is no `xek` here yet to derive the seed's public key
+# with, so that check, the embedding of the keys and the signing are its assemble command's, which
+# is given what it needs in its environment:
+#
+#   RELEASE_APP_ID, RELEASE_BUILD_ID   to embed, with the keys; the build id is empty if the
+#                                      version has none
+#   RELEASE_KEYS                       the directory of the public keys, or empty when not keyed
+#   RELEASE_SIGNING_KEY                the public key the release is to be signed with
+#   RELEASE_PREVIOUS_KEY               the latest release's copy of that key, if it had keys, under
+#                                      which the signed executables must also verify
+#   RELEASE_SIGNING_SEED               the seed, when there is one: the command takes it out of
+#                                      its environment at once, checks that it is the seed of
+#                                      RELEASE_SIGNING_KEY, and gives it to `xek sign` alone
 
 KEYS=etc/keys
 APP_ID="propensive/$NAME"
@@ -317,10 +337,19 @@ build_id() {
   echo $(( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} * 1000 + 10#${BASH_REMATCH[3]} ))
 }
 
+BUILD_ID=""
+PREVIOUS_TAG=""
+
 if [[ -n "$LAUNCHER" ]]; then
   BUILD_ID=$(build_id "$VERSION") ||
     fail "$VERSION has a minor or patch version of 1000 or more, so it has no build id"
+elif [[ -n "$ASSEMBLE" ]]; then
+  # An assembled release may be `X.Y`, which is built as `X.Y.0`; one with no build id is
+  # released all the same, without a manifest, unless it is keyed.
+  BUILD_ID=$(build_id "$VERSION" || build_id "$VERSION.0") || BUILD_ID=""
+fi
 
+if [[ -n "$LAUNCHER" || -n "$ASSEMBLE" ]]; then
   # The release installed copies are running: GitHub's `latest`, which is also the one whose
   # manifest their `upgrade` reads. Absent before a first release.
   PREVIOUS_TAG=$(gh api "repos/$REPO/releases/latest" --jq .tag_name 2>/dev/null) || PREVIOUS_TAG=""
@@ -328,7 +357,10 @@ if [[ -n "$LAUNCHER" ]]; then
 fi
 
 if [[ -f "$KEYS/release.pub" ]]; then
-  [[ -n "$LAUNCHER" ]] || fail "$KEYS/release.pub exists, but $CONFIG names no launcher to embed it in"
+  [[ -n "$LAUNCHER" || -n "$ASSEMBLE" ]] ||
+    fail "$KEYS/release.pub exists, but $CONFIG names no launcher to embed it in, and no assemble command"
+  [[ -n "$BUILD_ID" ]] ||
+    fail "$KEYS/release.pub exists, but $VERSION has a minor or patch version of 1000 or more, so it has no build id"
   KEYED=1
 
   # 1. The keys: recovery.pub beside release.pub, and each the size of an ML-DSA-44 public key.
@@ -360,14 +392,18 @@ if [[ -f "$KEYS/release.pub" ]]; then
   else
     [[ "$SIGNING_SEED" =~ ^[0-9a-fA-F]{64}$ ]] ||
       fail "UPGRADE_SIGNING_SEED is not 64 hexadecimal digits"
-    derived=$(mktemp)
-    XEK_SIGN_SEED="$SIGNING_SEED" XEK_DOWNLOAD=1 \
-      dist/xek public-key --key-env XEK_SIGN_SEED --out "$derived" >/dev/null ||
-      fail "could not derive the public key of UPGRADE_SIGNING_SEED"
-    cmp -s "$derived" "$SIGNING_KEY" ||
-      fail "UPGRADE_SIGNING_SEED is not the seed of $SIGNING_KEY; the secret is wrong or stale"
+    if [[ -n "$LAUNCHER" ]]; then
+      derived=$(mktemp)
+      XEK_SIGN_SEED="$SIGNING_SEED" XEK_DOWNLOAD=1 \
+        dist/xek public-key --key-env XEK_SIGN_SEED --out "$derived" >/dev/null ||
+        fail "could not derive the public key of UPGRADE_SIGNING_SEED"
+      cmp -s "$derived" "$SIGNING_KEY" ||
+        fail "UPGRADE_SIGNING_SEED is not the seed of $SIGNING_KEY; the secret is wrong or stale"
+      note "UPGRADE_SIGNING_SEED is the seed of $SIGNING_KEY"
+    else
+      note "\`$ASSEMBLE\` is to check that UPGRADE_SIGNING_SEED is the seed of $SIGNING_KEY"
+    fi
     SIGNED=1
-    note "UPGRADE_SIGNING_SEED is the seed of $SIGNING_KEY"
   fi
 
   # 4. Continuity: the release most users are running must be able to upgrade to this one, so
@@ -515,9 +551,47 @@ if [[ -n "$ASSEMBLE" ]]; then
   # below is those files, the name every other repository's assets have earned.
   ASSETS_DIR=$(mktemp -d)
   export RELEASE_VERSION="$VERSION" RELEASE_TAG="$TAG" RELEASE_ASSETS="$ASSETS_DIR" \
-         RELEASE_REPO_NAME="$REPO"
+         RELEASE_REPO_NAME="$REPO" RELEASE_APP_ID="$APP_ID" RELEASE_BUILD_ID="$BUILD_ID" \
+         RELEASE_KEYS="" RELEASE_SIGNING_KEY="" RELEASE_PREVIOUS_KEY=""
+  if [[ -n "$KEYED" ]]; then
+    export RELEASE_KEYS="$PWD/$KEYS" RELEASE_SIGNING_KEY="$PWD/$SIGNING_KEY" \
+           RELEASE_PREVIOUS_KEY="$PREVIOUS_KEY"
+  fi
   note "assembling: $ASSEMBLE"
-  ( unset SIGNING_SEED; eval "$ASSEMBLE" ) || fail "assembling the release failed"
+  # Without the seed, unless the release is to be signed: then the command, which builds the
+  # executables, is what signs them (see SIGNING above).
+  ( if [[ -n "$SIGNED" ]]; then export RELEASE_SIGNING_SEED="$SIGNING_SEED"; fi
+    unset SIGNING_SEED
+    eval "$ASSEMBLE"
+  ) || fail "assembling the release failed"
+
+  # The upgrade manifest, as a launcher's release has (see it written below): for a release
+  # holding an executable for every platform, named as a launcher's are. Its digests are the
+  # local files', which the draft's are checked against before it is published.
+  executables=()
+  for platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64; do
+    ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
+    [[ -f "$ASSETS_DIR/$NAME-$platform$ext" ]] && executables+=("$platform")
+  done
+  if (( ${#executables[@]} == 5 )) && [[ -n "$BUILD_ID" ]]; then
+    [[ ! -e "$ASSETS_DIR/upgrade.tsv" ]] ||
+      fail "\`$ASSEMBLE\` wrote upgrade.tsv, which is written here"
+    signed_by=""
+    if [[ -n "$SIGNED" ]]; then
+      signed_by=$(shasum -a 256 "$SIGNING_KEY" | cut -d' ' -f1)
+    fi
+    { printf 'version\t%s\nbuild\t%s\nsigned-by\t%s\n' "$VERSION" "$BUILD_ID" "$signed_by"
+      for platform in "${executables[@]}"; do
+        ext=""; [[ "$platform" == windows-* ]] && ext=".exe"
+        printf '%s\t%s\t%s\n' "$platform" \
+          "https://github.com/$REPO/releases/download/$TAG/$NAME-$platform$ext" \
+          "$(shasum -a 256 "$ASSETS_DIR/$NAME-$platform$ext" | cut -d' ' -f1)"
+      done
+    } > "$ASSETS_DIR/upgrade.tsv"
+    note "wrote the upgrade manifest: build $BUILD_ID$([[ -n "$SIGNED" ]] && echo ", signed with $SIGNING_KEY" || echo ', unsigned')"
+  elif [[ -n "$KEYED" ]]; then
+    fail "$KEYS/release.pub exists, but \`$ASSEMBLE\` did not write a $NAME-<platform> executable for each of the five platforms to embed it in"
+  fi
   mapfile -t jars < <(find "$ASSETS_DIR" -maxdepth 1 -type f | sort)
   count=${#jars[@]}
   (( count > 0 )) || fail "\`$ASSEMBLE\` wrote nothing into \$RELEASE_ASSETS"
@@ -594,7 +668,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   # What the release would propose to its consumers, read from GitHub but written nowhere.
   "$PROPENSIVE_SHARED" propagate.py --dry-run "$VERSION" ||
     note "dry run: previewing the pull requests to consumers failed"
-  note "dry run complete: $([[ -n "$ASSEMBLE" ]] && echo "$count assets assembled" || echo "$count jars staged ($LIBRARIES)")"
+  note "dry run complete: $([[ -n "$ASSEMBLE" ]] && echo "$count assets assembled in $ASSETS_DIR" || echo "$count jars staged ($LIBRARIES)")"
   trap - EXIT
   exit 0
 fi
