@@ -685,6 +685,14 @@ publish_descriptors() {
   mkdir -p "$dir/$VERSION"
   cp "${descriptors[@]}" "$dir/$VERSION/"
   git -C "$dir" add -A "$VERSION" README.md
+  # A retry of a release which got this far and was then rolled back finds its descriptors
+  # already on the branch: the rollback leaves them, as nothing reads a version's descriptors
+  # until its release exists. Identical ones are no failure, and different ones are replaced.
+  if git -C "$dir" diff --cached --quiet; then
+    note "the $branch branch already has the ${#descriptors[@]} descriptors of $VERSION"
+    rm -rf "$dir"
+    return 0
+  fi
   git -C "$dir" -c user.name="github-actions[bot]" \
     -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
     commit --quiet -m "Descriptors for $VERSION" || fail "committing the descriptors failed"
@@ -779,8 +787,24 @@ else
   # was resolved before.
   ./mill clean "$LAUNCHER" >/dev/null
   ./mill "$LAUNCHER.assembly" || fail "assembling $LAUNCHER failed"
-  cp "out/$(echo "$LAUNCHER" | tr '.' '/')/assembly.dest/out.jar" "$NAME.jar"
-  java -cp "$NAME.jar" soundness.repackage --github "$HINTS" | tee "/tmp/$NAME-repackage.log"
+  # The repackager lists every release of each hinted repository through the GitHub API, in
+  # responses of tens of megabytes, and one which is cut short fails it ("the releases listing
+  # for propensive/soundness was cut short", which rolled back orthant 0.8.0 after a full
+  # build). That is the network's doing and not the release's, so it is tried again, each time
+  # from the assembly as it was built: the repackager rewrites the JAR it is given in place.
+  repackaged=""
+  for (( attempt = 1; attempt <= 4; attempt++ )); do
+    cp "out/$(echo "$LAUNCHER" | tr '.' '/')/assembly.dest/out.jar" "$NAME.jar"
+    if java -cp "$NAME.jar" soundness.repackage --github "$HINTS" |
+        tee "/tmp/$NAME-repackage.log"; then
+      repackaged=1
+      break
+    fi
+    (( attempt == 4 )) && break
+    note "repackaging attempt $attempt of 4 failed; retrying in $((30 * attempt))s"
+    sleep $((30 * attempt))
+  done
+  [[ -n "$repackaged" ]] || fail "repackaging $NAME.jar failed after four attempts"
 
   # The whole point of the two-step ordering: refuse to ship an executable that quietly inlined a
   # library instead of referring to the release.
