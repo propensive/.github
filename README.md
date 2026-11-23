@@ -282,6 +282,20 @@ Each executable is built with the keys, the build id and the application id, sig
 verified under the key it was signed with and the latest release's matching key, all before
 upload; so the digests in the dispatcher and the installers are those of the signed files.
 
+**An assembled release** (`assemble`, which is xek's) is keyed in the same way, and its `upgrade`
+is the same. What differs is who does the work: its executables are built by its own assemble
+command, with the `xek` that command has just compiled, so `release.sh` has no builder to derive
+a key or sign with. It runs gates 1, 2, 4 and 5, and gives the command `RELEASE_APP_ID`,
+`RELEASE_BUILD_ID`, `RELEASE_KEYS` (the directory, empty when there are no keys),
+`RELEASE_SIGNING_KEY`, `RELEASE_PREVIOUS_KEY` and — this command alone, and only when there are
+keys — the seed, as `RELEASE_SIGNING_SEED`. The command takes the seed out of its environment
+before it runs anything, makes gate 3's check that it is the seed of `RELEASE_SIGNING_KEY`,
+embeds the keys, and signs and verifies each executable before it computes any digest. A version
+`X.Y` has the build id of `X.Y.0`. If the command leaves a `<name>-<platform>[.exe]` for all five
+platforms in `$RELEASE_ASSETS`, `release.sh` writes `upgrade.tsv` beside them, from their local
+digests, which the draft's are checked against before it is published; with keys, it insists on
+those executables.
+
 `upgrade.tsv`, attached to every application release, keyed or not, is what a tool reads from
 `releases/latest/download/upgrade.tsv`:
 
