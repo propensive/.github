@@ -25,8 +25,56 @@ mapfile -t stale < <(gh release list --repo "$REPO" --limit 1000 \
 if (( ${#stale[@]} == 0 )); then
   echo "snapshot-prune: no snapshots of $REPO older than $DAYS days"; exit 0
 fi
+# A request to GitHub, tried again if it fails: a server error or a rate limit passes.
+attempt() {
+  local try
+  for (( try = 1; try <= 5; try++ )); do
+    "$@" >/dev/null 2>&1 && return 0
+    (( try == 5 )) || sleep $((10 * try))
+  done
+  return 1
+}
+
+# Whether the release of a tag is still there.
+released() { gh api "repos/$REPO/releases/tags/$1" --jq .id 2>/dev/null; }
+
+# A snapshot of a large repository has hundreds of assets, and GitHub can fail to delete such a
+# release in the time it allows one request ("HTTP 502: Server Error", of a Soundness snapshot
+# with 626). Its assets are then deleted one at a time, each a request GitHub can answer, and
+# the release, now empty, after them. Run again, this carries on from where it stopped.
+prune() {
+  local tag=$1 id asset
+  if gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes 2>/dev/null; then return 0; fi
+
+  # The request may have failed and the deletion happened all the same.
+  sleep 5
+  id=$(released "$tag") || id=""
+  if [[ -n "$id" ]]; then
+    echo "snapshot-prune: GitHub would not delete $tag whole; deleting its assets first"
+    while true; do
+      mapfile -t assets < <(gh api "repos/$REPO/releases/$id/assets?per_page=100" --jq '.[].id')
+      (( ${#assets[@]} > 0 )) || break
+      for asset in "${assets[@]}"; do
+        attempt gh api -X DELETE "repos/$REPO/releases/assets/$asset" ||
+          { echo "snapshot-prune: could not delete an asset of $tag; run again to resume" >&2
+            return 1; }
+      done
+    done
+    attempt gh api -X DELETE "repos/$REPO/releases/$id" ||
+      { echo "snapshot-prune: could not delete the release $tag; run again to resume" >&2
+        return 1; }
+  fi
+
+  if git ls-remote --exit-code --tags "https://github.com/$REPO.git" "refs/tags/$tag" \
+      >/dev/null 2>&1; then
+    attempt gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" ||
+      { echo "snapshot-prune: could not delete the tag $tag; run again to resume" >&2
+        return 1; }
+  fi
+}
+
 for tag in "${stale[@]}"; do
-  gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
+  prune "$tag"
   echo "snapshot-prune: deleted $tag"
 done
 
